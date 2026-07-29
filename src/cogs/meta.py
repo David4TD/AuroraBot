@@ -14,10 +14,12 @@ class Meta(commands.Cog):
 
     @app_commands.command(name="help", description="What can AuroraBot do?")
     async def help(self, interaction: discord.Interaction) -> None:
+        lead = self.bot.settings.alert_lead_minutes
         embed = discord.Embed(
             title="🌌 AuroraBot — your eSports companion",
             description="Follow live scores, standings, analytics and predictions "
-            "across LoL, CS2, Valorant, Dota 2, Rocket League and more.",
+            "across LoL, CS2, Valorant, Dota 2, Rocket League and more.\n"
+            "**Everything is filtered to Tier 1 / S-tier tournaments.**",
             color=BRAND,
         )
         embed.add_field(
@@ -27,7 +29,7 @@ class Meta(commands.Cog):
         )
         embed.add_field(
             name="📊 Data",
-            value="`/standings` · `/team` (deep analytics)",
+            value="`/standings` (current tournaments) · `/team` (deep analytics)",
             inline=False,
         )
         embed.add_field(
@@ -37,15 +39,18 @@ class Meta(commands.Cog):
         )
         embed.add_field(
             name="🎲 Play",
-            value="`/predict` · `/mypredictions` · `/leaderboard`",
+            value="`/predict` · `/mypredictions` · `/leaderboard`\n"
+            "Or just react 1️⃣ / 2️⃣ on a match reminder to pick a winner.",
             inline=False,
         )
         embed.add_field(
             name="🔔 Alerts (mods)",
-            value="`/alerts add` · `/alerts list` · `/alerts remove`",
+            value="`/alerts add` — by **team**, by **tournament**, or a whole game\n"
+            f"`/alerts list` · `/alerts remove`\n"
+            f"Pings {lead} min before kick-off and again when the match goes live.",
             inline=False,
         )
-        embed.set_footer(text="AuroraBot · powered by PandaScore")
+        embed.set_footer(text="AuroraBot · Tier 1 only · powered by PandaScore")
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="ping", description="Check the bot's latency.")

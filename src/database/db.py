@@ -28,6 +28,9 @@ class Database:
         self._conn = await aiosqlite.connect(self.path)
         self._conn.row_factory = aiosqlite.Row
         await self._conn.execute("PRAGMA foreign_keys = ON;")
+        # Migrations first: schema.sql assumes the current column set (it
+        # indexes tournament_id, which pre-1.1 databases don't have yet).
+        await self._migrate()
         await self._run_schema()
         log.info("SQLite ready at %s", self.path)
 
@@ -41,6 +44,38 @@ class Database:
         script = SCHEMA_FILE.read_text(encoding="utf-8")
         await self._conn.executescript(script)
         await self._conn.commit()
+
+    async def _table_columns(self, table: str) -> set[str]:
+        cur = await self.conn.execute(f"PRAGMA table_info({table})")
+        return {row["name"] for row in await cur.fetchall()}
+
+    async def _migrate(self) -> None:
+        """Bring an existing database up to the current column set.
+
+        ``CREATE TABLE IF NOT EXISTS`` never alters an existing table, so new
+        columns are added here before schema.sql runs. Each step is guarded by
+        a column check, making the whole thing idempotent.
+        """
+        assert self._conn is not None
+        columns = await self._table_columns("alert_subscriptions")
+        if not columns or "tournament_id" in columns:
+            return  # fresh database, or already migrated
+
+        log.info("Migrating alert_subscriptions to tournament-aware schema…")
+        for ddl in (
+            "ALTER TABLE alert_subscriptions ADD COLUMN scope TEXT NOT NULL DEFAULT 'game'",
+            "ALTER TABLE alert_subscriptions ADD COLUMN tournament_id INTEGER",
+            "ALTER TABLE alert_subscriptions ADD COLUMN tournament_name TEXT",
+        ):
+            await self._conn.execute(ddl)
+        # Existing rows are team subs if they named a team, else game-wide.
+        await self._conn.execute(
+            "UPDATE alert_subscriptions SET scope = 'team' WHERE team_id IS NOT NULL"
+        )
+        await self._conn.commit()
+        # The legacy UNIQUE(channel_id, team_id, game) constraint stays behind
+        # on the old table definition; it's strictly weaker than the new
+        # idx_alertsub_unique index, so it costs nothing to leave in place.
 
     @property
     def conn(self) -> aiosqlite.Connection:
@@ -120,23 +155,31 @@ class Database:
         guild_id: int,
         channel_id: int,
         game: str,
-        team_id: int | None,
-        team_name: str | None,
         created_by: int,
+        scope: str = "game",
+        team_id: int | None = None,
+        team_name: str | None = None,
+        tournament_id: int | None = None,
+        tournament_name: str | None = None,
     ) -> bool:
+        """Insert a subscription. Returns False if this channel already has it."""
         try:
             await self.conn.execute(
                 """
                 INSERT INTO alert_subscriptions
-                    (guild_id, channel_id, team_id, team_name, game, created_by)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (guild_id, channel_id, game, scope, team_id, team_name,
+                     tournament_id, tournament_name, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(guild_id),
                     str(channel_id),
+                    game,
+                    scope,
                     team_id,
                     team_name,
-                    game,
+                    tournament_id,
+                    tournament_name,
                     str(created_by),
                 ),
             )
@@ -155,7 +198,8 @@ class Database:
 
     async def list_subscriptions(self, guild_id: int) -> list[aiosqlite.Row]:
         cur = await self.conn.execute(
-            "SELECT * FROM alert_subscriptions WHERE guild_id = ? ORDER BY game, team_name",
+            "SELECT * FROM alert_subscriptions WHERE guild_id = ? "
+            "ORDER BY game, scope, team_name, tournament_name",
             (str(guild_id),),
         )
         return list(await cur.fetchall())
@@ -178,6 +222,68 @@ class Database:
             (match_id, state, str(channel_id)),
         )
         await self.conn.commit()
+
+    # ── alert messages (reaction predictions) ────────────────────────────────
+    async def record_alert_message(
+        self,
+        message_id: int,
+        channel_id: int,
+        guild_id: int | None,
+        match_id: int,
+        game: str | None,
+        team_a: tuple[int, str],
+        team_b: tuple[int, str],
+        begin_at: str | None,
+    ) -> None:
+        """Remember which match an alert message announced, and its two teams.
+
+        Reactions arrive as raw gateway events with only IDs, and may land
+        after a restart, so the mapping has to live in the database rather than
+        in an in-memory view.
+        """
+        await self.conn.execute(
+            """
+            INSERT OR REPLACE INTO alert_messages
+                (message_id, channel_id, guild_id, match_id, game,
+                 team_a_id, team_a_name, team_b_id, team_b_name, begin_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(message_id),
+                str(channel_id),
+                str(guild_id) if guild_id else None,
+                match_id,
+                game,
+                team_a[0],
+                team_a[1],
+                team_b[0],
+                team_b[1],
+                begin_at,
+            ),
+        )
+        await self.conn.commit()
+
+    async def get_alert_message(self, message_id: int) -> aiosqlite.Row | None:
+        cur = await self.conn.execute(
+            "SELECT * FROM alert_messages WHERE message_id = ?", (str(message_id),)
+        )
+        return await cur.fetchone()
+
+    async def prune_alert_history(self, days: int = 3) -> int:
+        """Drop alert bookkeeping older than *days*; both tables grow forever
+        otherwise, and neither is useful once a match is long finished."""
+        cur = await self.conn.execute(
+            "DELETE FROM alerted_matches WHERE alerted_at < datetime('now', ?)",
+            (f"-{days} days",),
+        )
+        removed = cur.rowcount
+        cur = await self.conn.execute(
+            "DELETE FROM alert_messages WHERE created_at < datetime('now', ?)",
+            (f"-{days} days",),
+        )
+        removed += cur.rowcount
+        await self.conn.commit()
+        return removed
 
     # ── predictions ──────────────────────────────────────────────────────────
     async def create_prediction(
@@ -219,6 +325,37 @@ class Database:
             return True
         except aiosqlite.IntegrityError:
             return False  # already predicted this match
+
+    async def get_prediction(self, discord_id: int, match_id: int) -> aiosqlite.Row | None:
+        cur = await self.conn.execute(
+            "SELECT * FROM predictions WHERE discord_id = ? AND match_id = ?",
+            (str(discord_id), match_id),
+        )
+        return await cur.fetchone()
+
+    async def update_prediction_team(
+        self,
+        prediction_id: int,
+        predicted_team_id: int,
+        predicted_team_name: str,
+        opponent_team_name: str | None,
+    ) -> int:
+        """Switch an *open* prediction to the other team.
+
+        Lets someone change their mind by swapping their reaction before the
+        match starts. Resolved predictions are untouched, so this can't be used
+        to rewrite history after a result lands.
+        """
+        cur = await self.conn.execute(
+            """
+            UPDATE predictions
+               SET predicted_team_id = ?, predicted_team_name = ?, opponent_team_name = ?
+             WHERE id = ? AND status = 'open'
+            """,
+            (predicted_team_id, predicted_team_name, opponent_team_name, prediction_id),
+        )
+        await self.conn.commit()
+        return cur.rowcount
 
     async def get_open_predictions(self) -> list[aiosqlite.Row]:
         cur = await self.conn.execute(

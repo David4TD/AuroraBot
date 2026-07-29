@@ -28,6 +28,13 @@ def _get(name: str, default: str | None = None, *, required: bool = False) -> st
     return value or ""
 
 
+def _parse_bool(raw: str, default: bool) -> bool:
+    value = (raw or "").strip().lower()
+    if not value:
+        return default
+    return value in {"1", "true", "yes", "on"}
+
+
 def _parse_guild_ids(raw: str) -> list[int]:
     ids: list[int] = []
     for chunk in raw.replace(";", ",").split(","):
@@ -47,6 +54,8 @@ class Settings:
     health_port: int = 8080
     log_level: str = "INFO"
     cs_slug: str = "cs-go"
+    top_tier_only: bool = True
+    alert_lead_minutes: int = 30
 
     @property
     def data_dir(self) -> Path:
@@ -63,4 +72,6 @@ def load_settings() -> Settings:
         health_port=int(_get("HEALTH_PORT", "8080") or 8080),
         log_level=_get("LOG_LEVEL", "INFO") or "INFO",
         cs_slug=_get("PANDASCORE_CS_SLUG", "cs-go") or "cs-go",
+        top_tier_only=_parse_bool(_get("TOP_TIER_ONLY", "true"), True),
+        alert_lead_minutes=int(_get("ALERT_LEAD_MINUTES", "30") or 30),
     )

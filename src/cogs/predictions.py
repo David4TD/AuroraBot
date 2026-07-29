@@ -1,9 +1,10 @@
 """Match predictions & friendly challenges.
 
-Flow:
-  /predict game:<game>  → dropdown of upcoming matches
+Two ways in, both funnelling through ``utils.predictions.submit_prediction``:
+
+  /predict game:<game>  → dropdown of upcoming Tier 1 matches
                         → two buttons (the two teams)
-                        → prediction stored (10 pts stake by default)
+  reacting 1️⃣ / 2️⃣ to a match reminder alert (see cogs/alerts.py)
 
 A background task resolves open predictions once the match finishes and awards
 points to correct predictors.
@@ -19,22 +20,15 @@ from discord.ext import tasks
 
 from ..services.pandascore import PandaScoreError
 from ..utils.choices import GAME_CHOICES
-from ..utils.embeds import BRAND, GREEN, RED
+from ..utils.embeds import BRAND
 from ..utils.games import resolve_slug
+from ..utils.matches import opponents
+from ..utils.predictions import WIN_REWARD, submit_prediction
+from ..utils.tiers import filter_top_tier
 
 log = logging.getLogger("aurorabot.cogs.predictions")
 
-DEFAULT_STAKE = 10
-WIN_REWARD = 25
-
-
-def _opponents(match: dict) -> list[dict]:
-    out = []
-    for o in match.get("opponents") or []:
-        team = o.get("opponent") or {}
-        if team.get("id"):
-            out.append({"id": team["id"], "name": team.get("name", "Team")})
-    return out
+FETCH_SIZE = 50
 
 
 class TeamButton(discord.ui.Button):
@@ -46,29 +40,20 @@ class TeamButton(discord.ui.Button):
         self.game_key = game_key
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        opps = _opponents(self.match)
-        opponent = next((t["name"] for t in opps if t["id"] != self.team["id"]), None)
-        await self.cog.bot.db.ensure_user(interaction.user.id, interaction.user.display_name)
-        ok = await self.cog.bot.db.create_prediction(
-            discord_id=interaction.user.id,
+        opponent = next(
+            (t for t in opponents(self.match) if t["id"] != self.team["id"]), None
+        )
+        _, message = await submit_prediction(
+            self.cog.bot.db,
+            user_id=interaction.user.id,
+            display_name=interaction.user.display_name,
             match_id=int(self.match["id"]),
             game=self.game_key,
-            predicted_team_id=int(self.team["id"]),
-            predicted_team_name=self.team["name"],
-            opponent_team_name=opponent,
-            match_starts_at=self.match.get("begin_at"),
-            stake=DEFAULT_STAKE,
+            team=self.team,
+            opponent=opponent,
+            begin_at=self.match.get("begin_at"),
         )
-        if ok:
-            await interaction.response.edit_message(
-                content=f"🎲 You predicted **{self.team['name']}** to win. "
-                f"Win it for **+{WIN_REWARD}** points!",
-                view=None,
-            )
-        else:
-            await interaction.response.edit_message(
-                content="You've already made a prediction for that match.", view=None
-            )
+        await interaction.response.edit_message(content=message, view=None)
 
 
 class MatchSelect(discord.ui.Select):
@@ -78,7 +63,7 @@ class MatchSelect(discord.ui.Select):
         self._matches = {str(m["id"]): m for m in matches[:25]}
         options = []
         for m in matches[:25]:
-            opps = _opponents(m)
+            opps = opponents(m)
             if len(opps) < 2:
                 continue
             label = f"{opps[0]['name']} vs {opps[1]['name']}"[:100]
@@ -95,7 +80,7 @@ class MatchSelect(discord.ui.Select):
             await interaction.response.edit_message(content="No matches to predict.", view=None)
             return
         match = self._matches[self.values[0]]
-        opps = _opponents(match)
+        opps = opponents(match)
         view = discord.ui.View(timeout=120)
         for team in opps[:2]:
             view.add_item(TeamButton(self.cog, match, team, self.game_key))
@@ -114,7 +99,9 @@ class Predictions(commands.Cog):
     async def cog_unload(self) -> None:
         self.resolve_loop.cancel()
 
-    @app_commands.command(name="predict", description="Predict the winner of an upcoming match.")
+    @app_commands.command(
+        name="predict", description="Predict the winner of an upcoming Tier 1 match."
+    )
     @app_commands.choices(game=GAME_CHOICES)
     async def predict(
         self, interaction: discord.Interaction, game: app_commands.Choice[str]
@@ -122,14 +109,16 @@ class Predictions(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
         slug = resolve_slug(game.value, self.bot.settings.cs_slug)
         try:
-            matches = await self.bot.api.upcoming_matches(slug=slug, per_page=25)
+            matches = await self.bot.api.upcoming_matches(slug=slug, per_page=FETCH_SIZE)
         except PandaScoreError:
             await interaction.followup.send("Predictions are unavailable right now.", ephemeral=True)
             return
-        eligible = [m for m in matches if len(_opponents(m)) >= 2]
+        matches = filter_top_tier(matches, enabled=self.bot.settings.top_tier_only)
+        eligible = [m for m in matches if len(opponents(m)) >= 2]
         if not eligible:
             await interaction.followup.send(
-                "No upcoming matches with confirmed teams to predict yet.", ephemeral=True
+                "No upcoming Tier 1 matches with confirmed teams to predict yet.",
+                ephemeral=True,
             )
             return
         view = discord.ui.View(timeout=120)

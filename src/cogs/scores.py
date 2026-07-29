@@ -1,4 +1,9 @@
-"""Live & recent scores commands."""
+"""Live & recent scores commands.
+
+Every feed here is limited to **Tier 1 / S-tier** tournaments: the API is
+over-fetched and then filtered client-side (see ``utils.tiers``), because
+PandaScore has no server-side tier filter on the match endpoints.
+"""
 from __future__ import annotations
 
 import logging
@@ -11,8 +16,14 @@ from ..services.pandascore import PandaScoreError
 from ..utils.choices import GAME_CHOICES
 from ..utils.embeds import RED, match_embed
 from ..utils.games import resolve_slug
+from ..utils.tiers import NO_TOP_TIER_MATCHES, filter_top_tier
 
 log = logging.getLogger("aurorabot.cogs.scores")
+
+# How many raw matches to pull before tier filtering, and how many survivors to
+# render (Discord caps a message at 10 embeds).
+FETCH_SIZE = 50
+SHOW = 5
 
 
 class Scores(commands.Cog):
@@ -22,7 +33,12 @@ class Scores(commands.Cog):
     def _slug(self, game_key: str) -> str:
         return resolve_slug(game_key, self.bot.settings.cs_slug)
 
-    @app_commands.command(name="live", description="Show matches happening right now.")
+    def _top_tier(self, matches: list[dict]) -> list[dict]:
+        return filter_top_tier(matches, enabled=self.bot.settings.top_tier_only)
+
+    @app_commands.command(
+        name="live", description="Show Tier 1 matches happening right now."
+    )
     @app_commands.describe(game="Filter by a specific game (optional).")
     @app_commands.choices(game=GAME_CHOICES)
     async def live(
@@ -31,7 +47,9 @@ class Scores(commands.Cog):
         await interaction.response.defer(thinking=True)
         slug = self._slug(game.value) if game else None
         try:
-            matches = await self.bot.api.running_matches(slug=slug, per_page=8)
+            matches = self._top_tier(
+                await self.bot.api.running_matches(slug=slug, per_page=FETCH_SIZE)
+            )
         except PandaScoreError as exc:
             log.warning("live failed: %s", exc)
             await interaction.followup.send(
@@ -45,16 +63,16 @@ class Scores(commands.Cog):
 
         if not matches:
             await interaction.followup.send(
-                "No live matches right now. Try `/upcoming` to see what's next. 🎮"
+                "No live Tier 1 matches right now. Try `/upcoming` to see what's next. 🎮"
             )
             return
 
-        embeds = [match_embed(m, game.value if game else None) for m in matches[:5]]
+        embeds = [match_embed(m, game.value if game else None) for m in matches[:SHOW]]
         await interaction.followup.send(
-            content=f"🔴 **{len(matches)} live match(es)**", embeds=embeds
+            content=f"🔴 **{len(matches)} live Tier 1 match(es)**", embeds=embeds
         )
 
-    @app_commands.command(name="upcoming", description="Show upcoming matches.")
+    @app_commands.command(name="upcoming", description="Show upcoming Tier 1 matches.")
     @app_commands.describe(game="Filter by a specific game (optional).")
     @app_commands.choices(game=GAME_CHOICES)
     async def upcoming(
@@ -63,17 +81,21 @@ class Scores(commands.Cog):
         await interaction.response.defer(thinking=True)
         slug = self._slug(game.value) if game else None
         try:
-            matches = await self.bot.api.upcoming_matches(slug=slug, per_page=8)
+            matches = self._top_tier(
+                await self.bot.api.upcoming_matches(slug=slug, per_page=FETCH_SIZE)
+            )
         except PandaScoreError:
             await interaction.followup.send("The scores service is unavailable right now.")
             return
         if not matches:
-            await interaction.followup.send("Nothing scheduled that I can see yet.")
+            await interaction.followup.send(NO_TOP_TIER_MATCHES)
             return
-        embeds = [match_embed(m, game.value if game else None) for m in matches[:5]]
-        await interaction.followup.send(content="🗓️ **Upcoming**", embeds=embeds)
+        embeds = [match_embed(m, game.value if game else None) for m in matches[:SHOW]]
+        await interaction.followup.send(content="🗓️ **Upcoming · Tier 1**", embeds=embeds)
 
-    @app_commands.command(name="results", description="Show recent finished matches.")
+    @app_commands.command(
+        name="results", description="Show recent finished Tier 1 matches."
+    )
     @app_commands.describe(game="Filter by a specific game (optional).")
     @app_commands.choices(game=GAME_CHOICES)
     async def results(
@@ -82,15 +104,17 @@ class Scores(commands.Cog):
         await interaction.response.defer(thinking=True)
         slug = self._slug(game.value) if game else None
         try:
-            matches = await self.bot.api.past_matches(slug=slug, per_page=8)
+            matches = self._top_tier(
+                await self.bot.api.past_matches(slug=slug, per_page=FETCH_SIZE)
+            )
         except PandaScoreError:
             await interaction.followup.send("The scores service is unavailable right now.")
             return
         if not matches:
-            await interaction.followup.send("No recent results found.")
+            await interaction.followup.send(NO_TOP_TIER_MATCHES)
             return
-        embeds = [match_embed(m, game.value if game else None) for m in matches[:5]]
-        await interaction.followup.send(content="✅ **Recent results**", embeds=embeds)
+        embeds = [match_embed(m, game.value if game else None) for m in matches[:SHOW]]
+        await interaction.followup.send(content="✅ **Recent results · Tier 1**", embeds=embeds)
 
 
 async def setup(bot: commands.Bot) -> None:

@@ -73,19 +73,23 @@ class PandaScoreClient:
         raise PandaScoreError(f"Failed to reach PandaScore for {path}: {last_exc}")
 
     # ── matches ──────────────────────────────────────────────────────────────
-    async def running_matches(self, slug: str | None = None, per_page: int = 10) -> list[dict]:
+    # NOTE: PandaScore has no server-side ``filter[tier]`` on the match
+    # endpoints — tier lives on the embedded tournament/serie/league objects.
+    # Callers over-fetch here and filter with ``utils.tiers`` afterwards, so
+    # these default to a generous page size.
+    async def running_matches(self, slug: str | None = None, per_page: int = 50) -> list[dict]:
         path = f"/{slug}/matches/running" if slug else "/matches/running"
         data = await self._get(path, {"per_page": per_page})
         return data if isinstance(data, list) else []
 
-    async def upcoming_matches(self, slug: str | None = None, per_page: int = 10) -> list[dict]:
+    async def upcoming_matches(self, slug: str | None = None, per_page: int = 50) -> list[dict]:
         path = f"/{slug}/matches/upcoming" if slug else "/matches/upcoming"
         data = await self._get(
             path, {"per_page": per_page, "sort": "begin_at"}
         )
         return data if isinstance(data, list) else []
 
-    async def past_matches(self, slug: str | None = None, per_page: int = 10) -> list[dict]:
+    async def past_matches(self, slug: str | None = None, per_page: int = 50) -> list[dict]:
         path = f"/{slug}/matches/past" if slug else "/matches/past"
         data = await self._get(
             path, {"per_page": per_page, "sort": "-end_at"}
@@ -97,9 +101,10 @@ class PandaScoreClient:
         return data if isinstance(data, dict) else {}
 
     async def team_matches(self, team_id: int, per_page: int = 10) -> list[dict]:
+        """A team's matches, most recent first (form reads newest → oldest)."""
         data = await self._get(
             "/matches",
-            {"filter[opponent_id]": team_id, "per_page": per_page, "sort": "begin_at"},
+            {"filter[opponent_id]": team_id, "per_page": per_page, "sort": "-begin_at"},
         )
         return data if isinstance(data, list) else []
 
@@ -121,7 +126,7 @@ class PandaScoreClient:
         data = await self._get(path, {"search[name]": name, "per_page": per_page})
         return data if isinstance(data, list) else []
 
-    async def league_tournaments(self, league_id: int, per_page: int = 10) -> list[dict]:
+    async def league_tournaments(self, league_id: int, per_page: int = 50) -> list[dict]:
         data = await self._get(
             f"/leagues/{league_id}/tournaments",
             {"per_page": per_page, "sort": "-begin_at"},
@@ -131,3 +136,23 @@ class PandaScoreClient:
     async def tournament_standings(self, tournament_id: int) -> list[dict]:
         data = await self._get(f"/tournaments/{tournament_id}/standings")
         return data if isinstance(data, list) else []
+
+    # ── tournaments ──────────────────────────────────────────────────────────
+    async def running_tournaments(
+        self, slug: str | None = None, per_page: int = 50
+    ) -> list[dict]:
+        """Tournaments currently in progress, optionally scoped to one game."""
+        path = f"/{slug}/tournaments/running" if slug else "/tournaments/running"
+        data = await self._get(path, {"per_page": per_page, "sort": "begin_at"})
+        return data if isinstance(data, list) else []
+
+    async def upcoming_tournaments(
+        self, slug: str | None = None, per_page: int = 50
+    ) -> list[dict]:
+        path = f"/{slug}/tournaments/upcoming" if slug else "/tournaments/upcoming"
+        data = await self._get(path, {"per_page": per_page, "sort": "begin_at"})
+        return data if isinstance(data, list) else []
+
+    async def get_tournament(self, tournament_id: int) -> dict:
+        data = await self._get(f"/tournaments/{tournament_id}")
+        return data if isinstance(data, dict) else {}

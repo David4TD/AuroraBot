@@ -11,6 +11,7 @@ from ..services.pandascore import PandaScoreError
 from ..utils.choices import GAME_CHOICES
 from ..utils.embeds import analytics_embed
 from ..utils.games import rank_by_name, resolve_slug
+from ..utils.tiers import filter_top_tier
 
 log = logging.getLogger("aurorabot.cogs.analytics")
 
@@ -47,12 +48,15 @@ class Analytics(commands.Cog):
         team = rank_by_name(teams, name)[0]
         try:
             full = await self.bot.api.get_team(team["id"])
-            recent = await self.bot.api.team_matches(team["id"], per_page=12)
+            # Over-fetch: form is computed from Tier 1 games only, so a chunk
+            # of the raw history (qualifiers, regional B-tier) gets dropped.
+            recent = await self.bot.api.team_matches(team["id"], per_page=50)
         except PandaScoreError:
             full, recent = team, []
 
-        # Only keep finished matches for form/record.
+        # Only keep finished Tier 1 matches for form/record.
         finished = [m for m in recent if (m.get("status") or "").lower() == "finished"]
+        finished = filter_top_tier(finished, enabled=self.bot.settings.top_tier_only)[:15]
         embed = analytics_embed(full or team, finished, game.value if game else None)
         await interaction.followup.send(embed=embed)
 

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import discord
 
 from .games import REFERENCE_SITES, label_for
+from .tiers import tier_label
 
 BRAND = discord.Color.from_rgb(138, 99, 255)  # AuroraBot purple
 GREEN = discord.Color.from_rgb(59, 201, 121)
@@ -65,6 +66,7 @@ def match_embed(match: dict, game_key: str | None = None) -> discord.Embed:
     embed.add_field(
         name="Best of", value=str(match.get("number_of_games", "—")), inline=True
     )
+    embed.add_field(name="Tier", value=f"🏅 {tier_label(match)}", inline=True)
     if state != "running":
         embed.add_field(name="Starts", value=_fmt_dt(match.get("begin_at")), inline=False)
 
@@ -96,7 +98,7 @@ def standings_embed(tournament_name: str, standings: list[dict]) -> discord.Embe
         rank = row.get("rank", i)
         lines.append(f"`{rank:>2}` **{team}** — {wins}W / {losses}L")
     embed.description = "\n".join(lines) or "No standings available."
-    embed.set_footer(text="AuroraBot · powered by PandaScore")
+    embed.set_footer(text="AuroraBot · Tier 1 only · powered by PandaScore")
     return embed
 
 
@@ -122,6 +124,7 @@ def analytics_embed(team: dict, recent: list[dict], game_key: str | None) -> dis
     winrate = f"{(wins / total * 100):.0f}%" if total else "—"
 
     embed.add_field(name="Recent record", value=f"{wins}W – {losses}L", inline=True)
+    # Form reads left-to-right newest → oldest (see PandaScoreClient.team_matches).
     embed.add_field(name="Win rate", value=winrate, inline=True)
     embed.add_field(name="Form", value=" ".join(form[:8]) or "—", inline=False)
 
@@ -136,5 +139,5 @@ def analytics_embed(team: dict, recent: list[dict], game_key: str | None) -> dis
             value=f"[{REFERENCE_SITES[game_key]}]({REFERENCE_SITES[game_key]})",
             inline=False,
         )
-    embed.set_footer(text="AuroraBot · powered by PandaScore")
+    embed.set_footer(text="AuroraBot · Tier 1 form · powered by PandaScore")
     return embed

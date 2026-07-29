@@ -4,6 +4,9 @@ A production-ready **Discord bot for eSports fans**. Follow live scores,
 standings, deep team analytics and real-time match alerts — and challenge your
 friends with match predictions and a server leaderboard.
 
+Everything AuroraBot surfaces is limited to **Tier 1 / S-tier** tournaments, so
+your channels stay signal, not noise.
+
 Covers **League of Legends, Counter-Strike 2, Valorant, Dota 2, Rocket League,
 Rainbow Six, Call of Duty, Overwatch, PUBG, Mobile Legends** and more, powered
 by the [PandaScore API](https://pandascore.co).
@@ -18,17 +21,54 @@ on **Unraid** via Docker.
 | Area | Commands |
 |------|----------|
 | **Live scores** | `/live`, `/upcoming`, `/results` (optionally filtered by game) |
-| **Standings** | `/standings <league>` with a season/split picker dropdown |
+| **Standings** | `/standings <league>` — picker of that league's **current** splits |
 | **Analytics** | `/team <name>` — recent form, win rate, roster, deep-stats links |
 | **Profiles** | `/profile`, `/follow`, `/unfollow`, `/setgame` |
 | **Predictions** | `/predict`, `/mypredictions` — earn points for correct calls |
 | **Leaderboard** | `/leaderboard` — top predictors in your server |
-| **Alerts** | `/alerts add`, `/alerts list`, `/alerts remove` — ping a channel when matches go live |
+| **Alerts** | `/alerts add`, `/alerts list`, `/alerts remove` — by team, by tournament, or a whole game |
 | **Meta** | `/help`, `/ping` |
 
 Predictions resolve automatically: a background task checks finished matches
-every 5 minutes and awards points. Alerts poll for live matches on a
-configurable interval (default 60s).
+every 5 minutes and awards points. Alerts poll PandaScore on a configurable
+interval (default 60s).
+
+### 🏆 Tier 1 only
+
+Scores, alerts, predictions, standings and team form all pass through a tier
+filter — only tournaments PandaScore grades **S-tier** (equivalently, "Tier 1")
+are shown. Unknown/ungraded tiers are excluded rather than let through, so the
+feed never quietly fills up with third-tier qualifiers.
+
+PandaScore has no server-side tier filter on its match endpoints (tier lives on
+the embedded tournament object), so AuroraBot over-fetches and filters
+client-side in `src/utils/tiers.py`. Set `TOP_TIER_ONLY=false` to see every
+tier again.
+
+### 🔔 Alerts, reminders & reaction predictions
+
+`/alerts add` subscribes the current channel, scoped three ways:
+
+| Command | Alerts on |
+|---------|-----------|
+| `/alerts add game:Valorant team:Sentinels` | every Sentinels match in that game |
+| `/alerts add game:LoL tournament:…` | one tournament (autocompletes to **current** Tier 1 events) |
+| `/alerts add game:CS2` | every Tier 1 CS2 match |
+
+Each subscribed match produces **two** pings:
+
+1. a **reminder** `ALERT_LEAD_MINUTES` before kick-off (default **30 min**), and
+2. a **live** alert the moment the match starts.
+
+The reminder carries 1️⃣ / 2️⃣ reactions — react to predict that team as the
+winner, no slash command needed. You can swap your pick right up until kick-off;
+once the match starts the pick locks and AuroraBot confirms by DM (falling back
+to a self-deleting channel message if your DMs are closed). Reactions are
+handled as raw gateway events, so they keep working on alerts posted before the
+last bot restart.
+
+Each (match, state, channel) is announced at most once, so restarts mid-window
+never double-post.
 
 ### Deep-stats sources
 The analytics embeds link out to the community stat sites you rely on:
@@ -60,19 +100,39 @@ aurorabot/
 │   │   ├── profiles.py  predictions.py  leaderboard.py  alerts.py
 │   └── utils/
 │       ├── games.py           # game → PandaScore slug mapping
+│       ├── tiers.py           # Tier 1 / S-tier filtering
+│       ├── tournaments.py     # "is this tournament current?" + labels
+│       ├── matches.py         # opponent / tournament readers for payloads
+│       ├── predictions.py     # shared stake, reward and lock-in rules
 │       ├── embeds.py          # Discord embed builders
 │       └── choices.py         # slash-command choice lists
 ├── docker/
 │   ├── Dockerfile             # multi-stage, non-root, healthcheck
 │   ├── docker-compose.yml     # bot service + appdata volume
 │   ├── healthcheck.py         # stdlib-only container healthcheck
-│   └── aurorabot.xml          # Unraid Community Applications template
+│   ├── aurorabot.xml          # Unraid Community Applications template
+│   ├── icon.png               # container icon used by the template
+│   └── make_icon.py           # regenerates icon.png (stdlib only)
 ├── .github/workflows/
 │   └── docker-publish.yml     # build + push image to GHCR
 ├── requirements.txt
 ├── .env.example
+├── LICENSE
 └── README.md
 ```
+
+### 🎨 Regenerating the icon
+
+`docker/icon.png` is committed, but it's generated rather than hand-drawn — no
+Pillow or design tool required:
+
+```bash
+python docker/make_icon.py --size 256
+```
+
+The Unraid template points `<Icon>` at
+`https://raw.githubusercontent.com/YOUR_GITHUB_USER/aurorabot/main/docker/icon.png`,
+so the icon appears in the Docker tab once the repo is public.
 
 ---
 
@@ -172,7 +232,9 @@ Because the database lives on the mounted volume, updates never lose data.
 | `ESPORTS_API_KEY` | ✅ | — | PandaScore API key |
 | `DATABASE_PATH` | | `/app/data/aurorabot.db` | SQLite file path (inside container) |
 | `DEV_GUILD_IDS` | | _(empty)_ | Comma-separated guild IDs for instant command sync |
-| `ALERT_POLL_SECONDS` | | `60` | Live-match poll interval |
+| `ALERT_POLL_SECONDS` | | `60` | Match poll interval |
+| `ALERT_LEAD_MINUTES` | | `30` | Minutes before kick-off to post the reminder |
+| `TOP_TIER_ONLY` | | `true` | Restrict everything to Tier 1 / S-tier tournaments |
 | `HEALTH_PORT` | | `8080` | Internal health server port |
 | `LOG_LEVEL` | | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
 | `PANDASCORE_CS_SLUG` | | `cs-go` | PandaScore videogame slug for Counter-Strike |
@@ -184,7 +246,14 @@ Because the database lives on the mounted volume, updates never lose data.
 SQLite via `aiosqlite`, chosen so a single Unraid container needs no separate
 database service. The schema (`src/database/schema.sql`) is applied idempotently
 on every startup — safe across restarts and updates. Tables: `users`,
-`followed_teams`, `alert_subscriptions`, `alerted_matches`, `predictions`.
+`followed_teams`, `alert_subscriptions`, `alerted_matches`, `alert_messages`,
+`predictions`.
+
+Column changes are handled by `Database._migrate()`, which runs before the
+schema script and is guarded by `PRAGMA table_info` checks. Upgrading from an
+older AuroraBot converts existing alert subscriptions in place — team
+subscriptions become `scope='team'`, whole-game ones `scope='game'` — so **no
+data is lost and no manual step is needed**; just pull the new image.
 
 Prefer Postgres? A commented-out service and guidance are in
 `docker/docker-compose.yml`.
@@ -209,4 +278,16 @@ Prefer Postgres? A commented-out service and guidance are in
   and adjust the slug in `src/utils/games.py` (or `PANDASCORE_CS_SLUG` for CS).
 - Standings tables aren't available for every tournament (bracket-only events
   won't have them) — the bot tells the user when that's the case.
+- Empty feeds are usually the tier filter doing its job, not a bug: outside
+  major-league hours there genuinely are no Tier 1 matches. Set
+  `TOP_TIER_ONLY=false` briefly to confirm.
+- Alert subscriptions are per **channel**, and `/alerts` requires the *Manage
+  Server* permission. The bot needs *Add Reactions* in the alert channel for
+  reaction predictions; without it the reminder still posts, and a warning is
+  logged.
 
+---
+
+## 📄 License
+
+MIT — see [LICENSE](LICENSE).

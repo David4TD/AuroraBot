@@ -6,10 +6,15 @@ Flow:
     → if one clear match, jump straight to its tournaments
     → otherwise show a league picker, then a season/split picker
     → render the standings table
+
+The season/split picker only offers **current** tournaments (running now, or
+starting within the week) and only Tier 1 / S-tier events — historical splits
+are filtered out rather than padding the dropdown.
 """
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 import discord
 from discord import app_commands
@@ -19,6 +24,8 @@ from ..services.pandascore import PandaScoreError
 from ..utils.choices import GAME_CHOICES
 from ..utils.embeds import BRAND, standings_embed
 from ..utils.games import rank_by_name, resolve_slug
+from ..utils.tiers import filter_top_tier
+from ..utils.tournaments import current_tournaments, parse_dt, tournament_label
 
 log = logging.getLogger("aurorabot.cogs.standings")
 
@@ -30,9 +37,9 @@ async def _show_tournaments(
     *,
     edit: bool,
 ) -> None:
-    """Fetch a league's tournaments and present the season/split picker."""
+    """Fetch a league's *current* tournaments and present the split picker."""
     try:
-        tournaments = await cog.bot.api.league_tournaments(league["id"], per_page=25)
+        tournaments = await cog.bot.api.league_tournaments(league["id"], per_page=50)
     except PandaScoreError:
         msg = "Couldn't load that league's tournaments."
         if edit:
@@ -49,9 +56,24 @@ async def _show_tournaments(
             await interaction.followup.send(msg)
         return
 
+    # Current tournaments only, and only at the tier AuroraBot covers.
+    tournaments = current_tournaments(
+        filter_top_tier(tournaments, enabled=cog.bot.settings.top_tier_only)
+    )
+    if not tournaments:
+        msg = (
+            f"**{league.get('name')}** has no Tier 1 tournament running at the moment "
+            f"— standings appear once the next split is under way."
+        )
+        if edit:
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.followup.send(msg)
+        return
+
     embed = discord.Embed(
         title=f"🏆 {league.get('name')}",
-        description="Choose a season / split below to see its standings table.",
+        description="Choose a current season / split below to see its standings table.",
         color=BRAND,
     )
     if league.get("image_url"):
@@ -94,21 +116,25 @@ class LeagueView(discord.ui.View):
 class TournamentSelect(discord.ui.Select):
     def __init__(self, cog: "Standings", tournaments: list[dict]) -> None:
         self.cog = cog
+        now = datetime.now(timezone.utc)
         options = []
         for t in tournaments[:25]:
-            serie = (t.get("serie") or {}).get("full_name") or ""
-            name = t.get("name", "Stage")
-            label = f"{serie} · {name}".strip(" ·")[:100] or "Tournament"
-            year = (t.get("begin_at") or "")[:4]
+            begin = parse_dt(t.get("begin_at"))
+            if begin is None:
+                hint = None
+            elif begin <= now:
+                hint = "running now"
+            else:
+                hint = f"starts {begin:%d %b}"
             options.append(
                 discord.SelectOption(
-                    label=label[:100],
+                    label=tournament_label(t),
                     value=str(t["id"]),
-                    description=(f"{year}" if year else None),
+                    description=hint,
                 )
             )
         super().__init__(
-            placeholder="Pick a season / split to view standings…",
+            placeholder="Pick a current season / split to view standings…",
             options=options,
             min_values=1,
             max_values=1,
@@ -143,7 +169,9 @@ class Standings(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    @app_commands.command(name="standings", description="Look up standings for a league.")
+    @app_commands.command(
+        name="standings", description="Standings for a league's current tournaments."
+    )
     @app_commands.describe(
         league="League name, e.g. 'LEC', 'LCK', 'VCT', 'RLCS'.",
         game="Game the league belongs to.",

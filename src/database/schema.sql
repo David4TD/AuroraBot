@@ -28,26 +28,53 @@ CREATE TABLE IF NOT EXISTS followed_teams (
 );
 
 -- ─── Alert subscriptions (per guild channel) ────────────────────────────────
--- A channel can subscribe to a team and/or a whole game feed.
+-- A channel subscribes per game, scoped to a team, a tournament, or the whole
+-- (Tier 1) feed for that game. See db.py::_migrate for the upgrade path from
+-- the original team-only table.
 CREATE TABLE IF NOT EXISTS alert_subscriptions (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    guild_id    TEXT NOT NULL,
-    channel_id  TEXT NOT NULL,
-    team_id     INTEGER,                  -- NULL = all matches for the game
-    team_name   TEXT,
-    game        TEXT NOT NULL,
-    created_by  TEXT,
-    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE (channel_id, team_id, game)
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id        TEXT NOT NULL,
+    channel_id      TEXT NOT NULL,
+    game            TEXT NOT NULL,
+    scope           TEXT NOT NULL DEFAULT 'game',  -- game | team | tournament
+    team_id         INTEGER,              -- set when scope = 'team'
+    team_name       TEXT,
+    tournament_id   INTEGER,              -- set when scope = 'tournament'
+    tournament_name TEXT,
+    created_by      TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- IFNULL() in the index keeps whole-game subscriptions unique too: a plain
+-- UNIQUE constraint would treat every NULL team_id as distinct.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_alertsub_unique
+    ON alert_subscriptions (channel_id, game, IFNULL(team_id, 0), IFNULL(tournament_id, 0));
+
 -- Tracks which match/state combos we've already announced so we don't repeat.
+-- 'reminder' is the pre-match ping, 'live' fires when the match goes live.
 CREATE TABLE IF NOT EXISTS alerted_matches (
     match_id    INTEGER NOT NULL,
-    state       TEXT NOT NULL,            -- 'upcoming' | 'live' | 'finished'
+    state       TEXT NOT NULL,            -- 'reminder' | 'live' | 'finished'
     channel_id  TEXT NOT NULL,
     alerted_at  TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (match_id, state, channel_id)
+);
+
+-- ─── Alert messages (reaction predictions) ──────────────────────────────────
+-- Maps a posted alert message to the match it announced, so a reaction added
+-- later — possibly after a bot restart — can be resolved back to two teams.
+CREATE TABLE IF NOT EXISTS alert_messages (
+    message_id  TEXT PRIMARY KEY,
+    channel_id  TEXT NOT NULL,
+    guild_id    TEXT,
+    match_id    INTEGER NOT NULL,
+    game        TEXT,
+    team_a_id   INTEGER NOT NULL,
+    team_a_name TEXT NOT NULL,
+    team_b_id   INTEGER NOT NULL,
+    team_b_name TEXT NOT NULL,
+    begin_at    TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- ─── Predictions ────────────────────────────────────────────────────────────
@@ -72,3 +99,5 @@ CREATE INDEX IF NOT EXISTS idx_predictions_status  ON predictions(status);
 CREATE INDEX IF NOT EXISTS idx_predictions_match   ON predictions(match_id);
 CREATE INDEX IF NOT EXISTS idx_alertsub_game       ON alert_subscriptions(game);
 CREATE INDEX IF NOT EXISTS idx_followed_user       ON followed_teams(discord_id);
+CREATE INDEX IF NOT EXISTS idx_alerted_at          ON alerted_matches(alerted_at);
+CREATE INDEX IF NOT EXISTS idx_alertmsg_created    ON alert_messages(created_at);

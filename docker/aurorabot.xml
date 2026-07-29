@@ -6,26 +6,30 @@
 -->
 <Container version="2">
   <Name>AuroraBot</Name>
-  <Repository>ghcr.io/David4TD/aurorabot:latest</Repository>
-  <Registry>https://github.com/David4TD/aurorabot/pkgs/container/aurorabot</Registry>
+  <Repository>ghcr.io/YOUR_GITHUB_USER/aurorabot:latest</Repository>
+  <Registry>https://github.com/YOUR_GITHUB_USER/aurorabot/pkgs/container/aurorabot</Registry>
   <Network>bridge</Network>
   <MyIP/>
   <Shell>bash</Shell>
   <Privileged>false</Privileged>
-  <Support>https://github.com/David4TD/aurorabot/issues</Support>
-  <Project>https://github.com/David4TD/aurorabot</Project>
+  <Support>https://github.com/YOUR_GITHUB_USER/aurorabot/issues</Support>
+  <Project>https://github.com/YOUR_GITHUB_USER/aurorabot</Project>
   <Overview>
-    AuroraBot is a Discord bot for eSports fans. Follow live scores, standings,
-    deep analytics and match alerts across League of Legends, CS2, Valorant,
-    Dota 2, Rocket League, Rainbow Six and more. Customise your profile, follow
-    your favourite teams, and challenge friends on match predictions.
+    AuroraBot is a Discord bot for eSports fans, focused on Tier 1 / S-tier
+    competition. Follow live scores, current-season standings, deep analytics
+    and match alerts across League of Legends, CS2, Valorant, Dota 2, Rocket
+    League, Rainbow Six and more.
+    Subscribe a channel to a team, a tournament, or a whole game: AuroraBot
+    posts a 30-minute reminder before every match and pings again when it goes
+    live. React to a reminder to predict the winner and climb the server
+    leaderboard.
     Data is powered by the PandaScore API. Persistent data (SQLite DB + logs)
     lives in /mnt/user/appdata/aurorabot.
   </Overview>
   <Category>Tools: Other:</Category>
   <WebUI/>
   <TemplateURL/>
-  <Icon>https://raw.githubusercontent.com/David4TD/aurorabot/main/docker/icon.png</Icon>
+  <Icon>https://raw.githubusercontent.com/YOUR_GITHUB_USER/aurorabot/main/docker/icon.png</Icon>
   <ExtraParams>--health-cmd="python /app/healthcheck.py" --health-interval=30s --health-timeout=10s --health-retries=3</ExtraParams>
   <PostArgs/>
   <CPUset/>
@@ -79,6 +83,26 @@
           Default="60"
           Mode=""
           Description="How often (seconds) to poll PandaScore for live matches."
+          Type="Variable"
+          Display="advanced"
+          Required="false"
+          Mask="false"/>
+
+  <Config Name="Alert Lead Minutes"
+          Target="ALERT_LEAD_MINUTES"
+          Default="30"
+          Mode=""
+          Description="How many minutes before kick-off the match reminder (with winner-prediction reactions) is posted."
+          Type="Variable"
+          Display="advanced"
+          Required="false"
+          Mask="false"/>
+
+  <Config Name="Tier 1 Only"
+          Target="TOP_TIER_ONLY"
+          Default="true"
+          Mode=""
+          Description="Only show Tier 1 / S-tier tournaments across scores, alerts, predictions and standings. Set to false to include every tier."
           Type="Variable"
           Display="advanced"
           Required="false"
