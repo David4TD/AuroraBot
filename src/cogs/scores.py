@@ -1,8 +1,9 @@
 """Live & recent scores commands.
 
-Every feed here is limited to **Tier 1 / S-tier** tournaments: the API is
-over-fetched and then filtered client-side (see ``utils.tiers``), because
-PandaScore has no server-side tier filter on the match endpoints.
+Every feed here is limited to **Tier 1** tournaments (PandaScore S- and
+A-tier by default): the API is over-fetched and then filtered client-side (see
+``utils.tiers``), because PandaScore has no server-side tier filter on the
+match endpoints.
 """
 from __future__ import annotations
 
@@ -16,7 +17,7 @@ from ..services.pandascore import PandaScoreError
 from ..utils.choices import GAME_CHOICES
 from ..utils.embeds import RED, match_embed
 from ..utils.games import resolve_slug
-from ..utils.tiers import NO_TOP_TIER_MATCHES, filter_top_tier
+from ..utils.tiers import NO_TOP_TIER_MATCHES, filter_for
 
 log = logging.getLogger("aurorabot.cogs.scores")
 
@@ -34,7 +35,7 @@ class Scores(commands.Cog):
         return resolve_slug(game_key, self.bot.settings.cs_slug)
 
     def _top_tier(self, matches: list[dict]) -> list[dict]:
-        return filter_top_tier(matches, enabled=self.bot.settings.top_tier_only)
+        return filter_for(self.bot.settings, matches)
 
     @app_commands.command(
         name="live", description="Show Tier 1 matches happening right now."

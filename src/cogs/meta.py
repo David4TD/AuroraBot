@@ -6,6 +6,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from ..utils.embeds import BRAND
+from ..utils.tiers import describe
 
 
 class Meta(commands.Cog):
@@ -19,7 +20,8 @@ class Meta(commands.Cog):
             title="🌌 AuroraBot — your eSports companion",
             description="Follow live scores, standings, analytics and predictions "
             "across LoL, CS2, Valorant, Dota 2, Rocket League and more.\n"
-            "**Everything is filtered to Tier 1 / S-tier tournaments.**",
+            f"**Everything is filtered to Tier 1 tournaments** "
+            f"({describe(self.bot.settings)}).",
             color=BRAND,
         )
         embed.add_field(

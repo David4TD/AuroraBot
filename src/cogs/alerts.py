@@ -26,7 +26,7 @@ from ..utils.embeds import BRAND, GREEN, match_embed
 from ..utils.games import label_for, rank_by_name, resolve_slug
 from ..utils.matches import opponents, team_ids, tournament_id
 from ..utils.predictions import Outcome, submit_prediction
-from ..utils.tiers import filter_top_tier
+from ..utils.tiers import filter_for
 from ..utils.tournaments import current_tournaments, parse_dt, tournament_label
 
 log = logging.getLogger("aurorabot.cogs.alerts")
@@ -61,7 +61,7 @@ class Alerts(commands.Cog):
         return resolve_slug(game_key, self.bot.settings.cs_slug)
 
     def _top_tier(self, items: list[dict]) -> list[dict]:
-        return filter_top_tier(items, enabled=self.bot.settings.top_tier_only)
+        return filter_for(self.bot.settings, items)
 
     # ── tournament lookup ────────────────────────────────────────────────────
     async def _current_tournaments(self, game_key: str) -> list[dict]:
