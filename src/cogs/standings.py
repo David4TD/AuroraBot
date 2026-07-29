@@ -24,6 +24,7 @@ from ..services.pandascore import PandaScoreError
 from ..utils.choices import GAME_CHOICES
 from ..utils.embeds import BRAND, standings_embed
 from ..utils.games import rank_by_name, resolve_slug
+from ..utils.guildgames import blocked_message
 from ..utils.tiers import describe, filter_for, tier_label
 from ..utils.tournaments import current_tournaments, parse_dt, tournament_label
 
@@ -205,6 +206,9 @@ class Standings(commands.Cog):
         game: app_commands.Choice[str] | None = None,
     ) -> None:
         await interaction.response.defer(thinking=True)
+        if game and game.value in await self.bot.db.disabled_games(interaction.guild_id):
+            await interaction.followup.send(blocked_message(game.value))
+            return
         slug = resolve_slug(game.value, self.bot.settings.cs_slug) if game else None
         try:
             leagues = await self.bot.api.search_leagues(league, slug=slug, per_page=25)

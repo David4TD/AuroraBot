@@ -149,6 +149,61 @@ class Database:
         )
         return list(await cur.fetchall())
 
+    # ── per-guild game toggles ───────────────────────────────────────────────
+    async def disabled_games(self, guild_id: int | None) -> set[str]:
+        """Games this server has switched off. Empty for DMs / untouched guilds."""
+        if guild_id is None:
+            return set()
+        cur = await self.conn.execute(
+            "SELECT game FROM guild_games WHERE guild_id = ? AND enabled = 0",
+            (str(guild_id),),
+        )
+        return {row["game"] for row in await cur.fetchall()}
+
+    async def all_disabled_games(self) -> dict[str, set[str]]:
+        """``{guild_id: {disabled games}}`` — one query for the alert poll."""
+        cur = await self.conn.execute(
+            "SELECT guild_id, game FROM guild_games WHERE enabled = 0"
+        )
+        out: dict[str, set[str]] = {}
+        for row in await cur.fetchall():
+            out.setdefault(row["guild_id"], set()).add(row["game"])
+        return out
+
+    async def set_games(
+        self, guild_id: int, enabled: set[str], known: set[str], updated_by: int
+    ) -> None:
+        """Replace a guild's toggles in one shot from the /games panel.
+
+        *known* is the full game catalogue; anything in it that isn't in
+        *enabled* is written as disabled. Games outside *known* are left alone
+        so an unrecognised row can't be clobbered by a stale panel.
+        """
+        rows = [
+            (str(guild_id), game, 1 if game in enabled else 0, str(updated_by))
+            for game in known
+        ]
+        await self.conn.executemany(
+            """
+            INSERT INTO guild_games (guild_id, game, enabled, updated_by)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(guild_id, game) DO UPDATE SET
+                enabled    = excluded.enabled,
+                updated_by = excluded.updated_by,
+                updated_at = datetime('now')
+            """,
+            rows,
+        )
+        await self.conn.commit()
+
+    async def reset_games(self, guild_id: int) -> int:
+        """Clear all toggles, returning the guild to "every game enabled"."""
+        cur = await self.conn.execute(
+            "DELETE FROM guild_games WHERE guild_id = ?", (str(guild_id),)
+        )
+        await self.conn.commit()
+        return cur.rowcount
+
     # ── alert subscriptions ──────────────────────────────────────────────────
     async def add_subscription(
         self,

@@ -22,6 +22,7 @@ from ..services.pandascore import PandaScoreError
 from ..utils.choices import GAME_CHOICES
 from ..utils.embeds import BRAND
 from ..utils.games import resolve_slug
+from ..utils.guildgames import blocked_message
 from ..utils.matches import opponents
 from ..utils.predictions import WIN_REWARD, submit_prediction
 from ..utils.tiers import filter_for
@@ -107,6 +108,9 @@ class Predictions(commands.Cog):
         self, interaction: discord.Interaction, game: app_commands.Choice[str]
     ) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
+        if game.value in await self.bot.db.disabled_games(interaction.guild_id):
+            await interaction.followup.send(blocked_message(game.value), ephemeral=True)
+            return
         slug = resolve_slug(game.value, self.bot.settings.cs_slug)
         try:
             matches = await self.bot.api.upcoming_matches(slug=slug, per_page=FETCH_SIZE)

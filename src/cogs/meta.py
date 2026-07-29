@@ -46,6 +46,12 @@ class Meta(commands.Cog):
             inline=False,
         )
         embed.add_field(
+            name="🎮 Games",
+            value="`/games` — see which titles this server follows "
+            "(mods can toggle them on and off)",
+            inline=False,
+        )
+        embed.add_field(
             name="🔔 Alerts (mods)",
             value="`/alerts add` — by **team**, by **tournament**, or a whole game\n"
             f"`/alerts list` · `/alerts remove`\n"

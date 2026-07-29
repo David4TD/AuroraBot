@@ -48,6 +48,24 @@ def resolve_slug(key: str, cs_override: str | None = None) -> str:
     return game.slug
 
 
+def key_for_slug(slug: str | None, cs_override: str | None = None) -> str | None:
+    """Reverse of :func:`resolve_slug` — PandaScore slug → catalogue key.
+
+    Needed by the unfiltered feeds (`/live` with no game), where results span
+    every title and each match must be mapped back to a key to honour the
+    server's game toggles. Returns ``None`` for titles outside the catalogue.
+    """
+    if not slug:
+        return None
+    slug = slug.strip().lower()
+    if cs_override and slug == cs_override.strip().lower():
+        return "csgo"
+    for game in GAMES.values():
+        if game.slug == slug:
+            return game.key
+    return None
+
+
 def game_choices() -> list[tuple[str, str]]:
     """Return (label, key) pairs for building app-command choices."""
     return [(g.label, g.key) for g in GAMES.values()]

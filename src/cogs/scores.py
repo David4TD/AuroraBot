@@ -17,6 +17,7 @@ from ..services.pandascore import PandaScoreError
 from ..utils.choices import GAME_CHOICES
 from ..utils.embeds import RED, match_embed
 from ..utils.games import resolve_slug
+from ..utils.guildgames import blocked_message, filter_enabled
 from ..utils.tiers import NO_TOP_TIER_MATCHES, filter_for
 
 log = logging.getLogger("aurorabot.cogs.scores")
@@ -37,6 +38,23 @@ class Scores(commands.Cog):
     def _top_tier(self, matches: list[dict]) -> list[dict]:
         return filter_for(self.bot.settings, matches)
 
+    async def _gate(
+        self, interaction: discord.Interaction, game: app_commands.Choice[str] | None
+    ) -> tuple[bool, set[str]]:
+        """Apply this server's game toggles.
+
+        Returns ``(allowed, disabled)``. When the user named a muted game the
+        caller should bail out — ``_gate`` has already replied explaining why.
+        """
+        disabled = await self.bot.db.disabled_games(interaction.guild_id)
+        if game and game.value in disabled:
+            await interaction.followup.send(blocked_message(game.value))
+            return False, disabled
+        return True, disabled
+
+    def _for_guild(self, matches: list[dict], disabled: set[str]) -> list[dict]:
+        return filter_enabled(matches, disabled, self.bot.settings.cs_slug)
+
     @app_commands.command(
         name="live", description="Show Tier 1 matches happening right now."
     )
@@ -46,10 +64,16 @@ class Scores(commands.Cog):
         self, interaction: discord.Interaction, game: app_commands.Choice[str] | None = None
     ) -> None:
         await interaction.response.defer(thinking=True)
+        allowed, disabled = await self._gate(interaction, game)
+        if not allowed:
+            return
         slug = self._slug(game.value) if game else None
         try:
-            matches = self._top_tier(
-                await self.bot.api.running_matches(slug=slug, per_page=FETCH_SIZE)
+            matches = self._for_guild(
+                self._top_tier(
+                    await self.bot.api.running_matches(slug=slug, per_page=FETCH_SIZE)
+                ),
+                disabled,
             )
         except PandaScoreError as exc:
             log.warning("live failed: %s", exc)
@@ -80,10 +104,16 @@ class Scores(commands.Cog):
         self, interaction: discord.Interaction, game: app_commands.Choice[str] | None = None
     ) -> None:
         await interaction.response.defer(thinking=True)
+        allowed, disabled = await self._gate(interaction, game)
+        if not allowed:
+            return
         slug = self._slug(game.value) if game else None
         try:
-            matches = self._top_tier(
-                await self.bot.api.upcoming_matches(slug=slug, per_page=FETCH_SIZE)
+            matches = self._for_guild(
+                self._top_tier(
+                    await self.bot.api.upcoming_matches(slug=slug, per_page=FETCH_SIZE)
+                ),
+                disabled,
             )
         except PandaScoreError:
             await interaction.followup.send("The scores service is unavailable right now.")
@@ -103,10 +133,16 @@ class Scores(commands.Cog):
         self, interaction: discord.Interaction, game: app_commands.Choice[str] | None = None
     ) -> None:
         await interaction.response.defer(thinking=True)
+        allowed, disabled = await self._gate(interaction, game)
+        if not allowed:
+            return
         slug = self._slug(game.value) if game else None
         try:
-            matches = self._top_tier(
-                await self.bot.api.past_matches(slug=slug, per_page=FETCH_SIZE)
+            matches = self._for_guild(
+                self._top_tier(
+                    await self.bot.api.past_matches(slug=slug, per_page=FETCH_SIZE)
+                ),
+                disabled,
             )
         except PandaScoreError:
             await interaction.followup.send("The scores service is unavailable right now.")

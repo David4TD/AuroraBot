@@ -27,6 +27,19 @@ CREATE TABLE IF NOT EXISTS followed_teams (
     FOREIGN KEY (discord_id) REFERENCES users(discord_id) ON DELETE CASCADE
 );
 
+-- ─── Per-guild game toggles ─────────────────────────────────────────────────
+-- Only *disabled* games need a row: a missing row means enabled, so a server
+-- that never touches /games follows everything, and games added to the
+-- catalogue later switch on by default instead of silently staying off.
+CREATE TABLE IF NOT EXISTS guild_games (
+    guild_id    TEXT NOT NULL,
+    game        TEXT NOT NULL,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    updated_by  TEXT,
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (guild_id, game)
+);
+
 -- ─── Alert subscriptions (per guild channel) ────────────────────────────────
 -- A channel subscribes per game, scoped to a team, a tournament, or the whole
 -- (Tier 1) feed for that game. See db.py::_migrate for the upgrade path from
@@ -101,3 +114,4 @@ CREATE INDEX IF NOT EXISTS idx_alertsub_game       ON alert_subscriptions(game);
 CREATE INDEX IF NOT EXISTS idx_followed_user       ON followed_teams(discord_id);
 CREATE INDEX IF NOT EXISTS idx_alerted_at          ON alerted_matches(alerted_at);
 CREATE INDEX IF NOT EXISTS idx_alertmsg_created    ON alert_messages(created_at);
+CREATE INDEX IF NOT EXISTS idx_guildgames_disabled ON guild_games(guild_id) WHERE enabled = 0;

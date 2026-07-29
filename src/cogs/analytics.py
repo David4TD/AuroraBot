@@ -11,6 +11,7 @@ from ..services.pandascore import PandaScoreError
 from ..utils.choices import GAME_CHOICES
 from ..utils.embeds import analytics_embed
 from ..utils.games import rank_by_name, resolve_slug
+from ..utils.guildgames import blocked_message
 from ..utils.tiers import filter_for
 
 log = logging.getLogger("aurorabot.cogs.analytics")
@@ -35,6 +36,9 @@ class Analytics(commands.Cog):
         game: app_commands.Choice[str] | None = None,
     ) -> None:
         await interaction.response.defer(thinking=True)
+        if game and game.value in await self.bot.db.disabled_games(interaction.guild_id):
+            await interaction.followup.send(blocked_message(game.value))
+            return
         slug = resolve_slug(game.value, self.bot.settings.cs_slug) if game else None
         try:
             teams = await self.bot.api.search_teams(name, slug=slug, per_page=5)

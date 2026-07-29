@@ -27,6 +27,7 @@ on **Unraid** via Docker.
 | **Predictions** | `/predict`, `/mypredictions` — earn points for correct calls |
 | **Leaderboard** | `/leaderboard` — top predictors in your server |
 | **Alerts** | `/alerts add`, `/alerts list`, `/alerts remove` — by team, by tournament, or a whole game |
+| **Games** | `/games` — toggle which titles this server follows |
 | **Meta** | `/help`, `/ping` |
 
 Predictions resolve automatically: a background task checks finished matches
@@ -58,6 +59,32 @@ PandaScore exposes no server-side tier filter on the match endpoints, so
 AuroraBot over-fetches and filters client-side in `src/utils/tiers.py`.
 
 > Sources: [Tournaments in-depth](https://developers.pandascore.co/docs/tournaments-in-depth)
+
+### 🎮 Per-server game toggles
+
+`/games` shows which of the ten titles this server follows. Anyone can look;
+members with **Manage Server** also get a multi-select — everything selected is
+followed, everything cleared is muted, applied in one go. A **Follow all games**
+button undoes the lot.
+
+Muting a game:
+
+- removes it from the unfiltered `/live`, `/upcoming` and `/results`, and
+- silences the alert poll for it, so muted games can't ping the server (and
+  cost no API call).
+
+Asking for it explicitly still works — `/live game:Dota 2` on a server that
+muted Dota replies "**Dota 2** is muted on this server" rather than pretending
+there's nothing on. The toggle curates the firehose; it doesn't hide the
+catalogue.
+
+Existing `/alerts` subscriptions for a muted game are **kept, not deleted** —
+they simply go quiet, and resume if you switch the game back on. Only muted
+games are stored, so a server that never runs `/games` follows everything, and
+titles added to the catalogue later default to on.
+
+Settings are per Discord server; running the bot in several servers gives each
+its own list.
 
 ### 🔔 Alerts, reminders & reaction predictions
 
@@ -112,8 +139,10 @@ aurorabot/
 │   ├── cogs/                  # one module per feature area
 │   │   ├── meta.py  scores.py  standings.py  analytics.py
 │   │   ├── profiles.py  predictions.py  leaderboard.py  alerts.py
+│   │   └── games.py           # /games toggle panel
 │   └── utils/
-│       ├── games.py           # game → PandaScore slug mapping
+│       ├── games.py           # game ↔ PandaScore slug mapping
+│       ├── guildgames.py      # enforcement of the per-server toggles
 │       ├── tiers.py           # Tier 1 (S/A grade) filtering
 │       ├── tournaments.py     # "is this tournament current?" + labels
 │       ├── matches.py         # opponent / tournament readers for payloads
@@ -261,8 +290,8 @@ Because the database lives on the mounted volume, updates never lose data.
 SQLite via `aiosqlite`, chosen so a single Unraid container needs no separate
 database service. The schema (`src/database/schema.sql`) is applied idempotently
 on every startup — safe across restarts and updates. Tables: `users`,
-`followed_teams`, `alert_subscriptions`, `alerted_matches`, `alert_messages`,
-`predictions`.
+`followed_teams`, `guild_games`, `alert_subscriptions`, `alerted_matches`,
+`alert_messages`, `predictions`.
 
 Column changes are handled by `Database._migrate()`, which runs before the
 schema script and is guarded by `PRAGMA table_info` checks. Upgrading from an

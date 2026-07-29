@@ -6,6 +6,19 @@ re-implemented per cog.
 """
 from __future__ import annotations
 
+from .games import key_for_slug
+
+
+def game_key_of(match: dict, cs_override: str | None = None) -> str | None:
+    """Which catalogue game a match belongs to, from its ``videogame`` block.
+
+    ``None`` when PandaScore returns a title AuroraBot doesn't catalogue — such
+    matches are left alone by the per-guild toggles, since there's no switch to
+    turn them off with.
+    """
+    videogame = match.get("videogame") or {}
+    return key_for_slug(videogame.get("slug"), cs_override)
+
 
 def opponents(match: dict) -> list[dict]:
     """Return ``[{"id": ..., "name": ...}, ...]`` for the confirmed teams.

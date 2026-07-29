@@ -24,6 +24,7 @@ from ..services.pandascore import PandaScoreError
 from ..utils.choices import GAME_CHOICES
 from ..utils.embeds import BRAND, GREEN, match_embed
 from ..utils.games import label_for, rank_by_name, resolve_slug
+from ..utils.guildgames import blocked_message
 from ..utils.matches import opponents, team_ids, tournament_id
 from ..utils.predictions import Outcome, submit_prediction
 from ..utils.tiers import filter_for
@@ -135,6 +136,11 @@ class Alerts(commands.Cog):
                 "run `/alerts add` twice if you want both.",
                 ephemeral=True,
             )
+            return
+
+        # Refuse up front rather than storing a subscription the poll will skip.
+        if game.value in await self.bot.db.disabled_games(interaction.guild_id):
+            await interaction.followup.send(blocked_message(game.value), ephemeral=True)
             return
 
         scope = "game"
@@ -305,6 +311,20 @@ class Alerts(commands.Cog):
         subs = await self.bot.db.all_subscriptions()
         if not subs:
             return
+
+        # Honour each server's /games toggles before picking which feeds to
+        # fetch, so a muted game costs no API call at all. Subscriptions made
+        # before a game was muted stay in the table and simply go quiet — they
+        # resume if it's switched back on.
+        disabled_by_guild = await self.bot.db.all_disabled_games()
+        if disabled_by_guild:
+            subs = [
+                s
+                for s in subs
+                if s["game"] not in disabled_by_guild.get(str(s["guild_id"]), frozenset())
+            ]
+            if not subs:
+                return
 
         lead = self.bot.settings.alert_lead_minutes
         now = datetime.now(timezone.utc)
