@@ -4,8 +4,8 @@ A production-ready **Discord bot for eSports fans**. Follow live scores,
 standings, deep team analytics and real-time match alerts — and challenge your
 friends with match predictions and a server leaderboard.
 
-Everything AuroraBot surfaces is limited to **Tier 1 / S-tier** tournaments, so
-your channels stay signal, not noise.
+Everything AuroraBot surfaces is limited to **Tier 1** tournaments, so your
+channels stay signal, not noise.
 
 Covers **League of Legends, Counter-Strike 2, Valorant, Dota 2, Rocket League,
 Rainbow Six, Call of Duty, Overwatch, PUBG, Mobile Legends** and more, powered
@@ -36,14 +36,28 @@ interval (default 60s).
 ### 🏆 Tier 1 only
 
 Scores, alerts, predictions, standings and team form all pass through a tier
-filter — only tournaments PandaScore grades **S-tier** (equivalently, "Tier 1")
-are shown. Unknown/ungraded tiers are excluded rather than let through, so the
-feed never quietly fills up with third-tier qualifiers.
+filter. Unknown/ungraded tiers are excluded rather than let through, so the feed
+never quietly fills up with third-tier qualifiers.
 
-PandaScore has no server-side tier filter on its match endpoints (tier lives on
-the embedded tournament object), so AuroraBot over-fetches and filters
-client-side in `src/utils/tiers.py`. Set `TOP_TIER_ONLY=false` to see every
-tier again.
+**PandaScore's tier scale is narrower than the scene's.** They grade
+`S > A > B > C > D > unranked`, and reserve `S` for the majors — so filtering on
+`S` alone would drop every regional league:
+
+| Grade | Examples |
+|-------|----------|
+| `S` | Worlds, MSI, The International, CS Majors / IEM / BLAST, VCT Masters |
+| `A` | **LEC, LCK, LCS, LPL**, VCT EMEA / NA, ESL Pro League, DPC Division 1 |
+| `B`–`D` | Regional qualifiers, academy and development circuits |
+
+"Tier 1" in the sense fans mean it is therefore **S + A**, which is the default
+(`TIERS=s,a`). Narrow it to majors only with `TIERS=s`, widen it with
+`TIERS=s,a,b`, or turn the filter off entirely with `TOP_TIER_ONLY=false`.
+
+Tier lives on the *tournament* object only — not on series or leagues — and
+PandaScore exposes no server-side tier filter on the match endpoints, so
+AuroraBot over-fetches and filters client-side in `src/utils/tiers.py`.
+
+> Sources: [Tournaments in-depth](https://developers.pandascore.co/docs/tournaments-in-depth)
 
 ### 🔔 Alerts, reminders & reaction predictions
 
@@ -100,7 +114,7 @@ aurorabot/
 │   │   ├── profiles.py  predictions.py  leaderboard.py  alerts.py
 │   └── utils/
 │       ├── games.py           # game → PandaScore slug mapping
-│       ├── tiers.py           # Tier 1 / S-tier filtering
+│       ├── tiers.py           # Tier 1 (S/A grade) filtering
 │       ├── tournaments.py     # "is this tournament current?" + labels
 │       ├── matches.py         # opponent / tournament readers for payloads
 │       ├── predictions.py     # shared stake, reward and lock-in rules
@@ -234,7 +248,8 @@ Because the database lives on the mounted volume, updates never lose data.
 | `DEV_GUILD_IDS` | | _(empty)_ | Comma-separated guild IDs for instant command sync |
 | `ALERT_POLL_SECONDS` | | `60` | Match poll interval |
 | `ALERT_LEAD_MINUTES` | | `30` | Minutes before kick-off to post the reminder |
-| `TOP_TIER_ONLY` | | `true` | Restrict everything to Tier 1 / S-tier tournaments |
+| `TOP_TIER_ONLY` | | `true` | Restrict everything to top-tier tournaments |
+| `TIERS` | | `s,a` | PandaScore tier grades counting as Tier 1 (see above) |
 | `HEALTH_PORT` | | `8080` | Internal health server port |
 | `LOG_LEVEL` | | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
 | `PANDASCORE_CS_SLUG` | | `cs-go` | PandaScore videogame slug for Counter-Strike |
@@ -279,8 +294,10 @@ Prefer Postgres? A commented-out service and guidance are in
 - Standings tables aren't available for every tournament (bracket-only events
   won't have them) — the bot tells the user when that's the case.
 - Empty feeds are usually the tier filter doing its job, not a bug: outside
-  major-league hours there genuinely are no Tier 1 matches. Set
-  `TOP_TIER_ONLY=false` briefly to confirm.
+  major-league hours there genuinely are no Tier 1 matches. `/standings` names
+  the tournaments it filtered out and their grades, so you can see whether the
+  bar is set too high — widen `TIERS` or set `TOP_TIER_ONLY=false` to confirm.
+  `LOG_LEVEL=DEBUG` logs the tournament counts at each filter step.
 - Alert subscriptions are per **channel**, and `/alerts` requires the *Manage
   Server* permission. The bot needs *Add Reactions* in the alert channel for
   reaction predictions; without it the reminder still posts, and a warning is

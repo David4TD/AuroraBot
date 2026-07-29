@@ -102,7 +102,17 @@
           Target="TOP_TIER_ONLY"
           Default="true"
           Mode=""
-          Description="Only show Tier 1 / S-tier tournaments across scores, alerts, predictions and standings. Set to false to include every tier."
+          Description="Only show top-tier tournaments across scores, alerts, predictions and standings. Set to false to include every tier."
+          Type="Variable"
+          Display="advanced"
+          Required="false"
+          Mask="false"/>
+
+  <Config Name="Tier Grades"
+          Target="TIERS"
+          Default="s,a"
+          Mode=""
+          Description="Which PandaScore tier grades count as Tier 1 (scale S>A>B>C>D). S is majors only (Worlds, MSI, TI, CS Majors); regional leagues like LEC, LCK, LCS and VCT EMEA are graded A — so the default covers both. Use 's' for majors only, or 's,a,b' to widen."
           Type="Variable"
           Display="advanced"
           Required="false"

@@ -24,7 +24,7 @@ from ..utils.embeds import BRAND
 from ..utils.games import resolve_slug
 from ..utils.matches import opponents
 from ..utils.predictions import WIN_REWARD, submit_prediction
-from ..utils.tiers import filter_top_tier
+from ..utils.tiers import filter_for
 
 log = logging.getLogger("aurorabot.cogs.predictions")
 
@@ -113,7 +113,7 @@ class Predictions(commands.Cog):
         except PandaScoreError:
             await interaction.followup.send("Predictions are unavailable right now.", ephemeral=True)
             return
-        matches = filter_top_tier(matches, enabled=self.bot.settings.top_tier_only)
+        matches = filter_for(self.bot.settings, matches)
         eligible = [m for m in matches if len(opponents(m)) >= 2]
         if not eligible:
             await interaction.followup.send(

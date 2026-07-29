@@ -9,6 +9,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .utils.tiers import DEFAULT_TOP_TIERS, parse_tier_list
+
 try:
     # Optional: only present/needed for local development.
     from dotenv import load_dotenv
@@ -56,6 +58,10 @@ class Settings:
     cs_slug: str = "cs-go"
     top_tier_only: bool = True
     alert_lead_minutes: int = 30
+    # PandaScore tier letters that count as "Tier 1". Their S is majors-only
+    # (Worlds, TI, CS Majors), while regional leagues like LEC/LCK are A — so
+    # the default spans both. See src/utils/tiers.py.
+    tier_allowlist: frozenset[str] = DEFAULT_TOP_TIERS
 
     @property
     def data_dir(self) -> Path:
@@ -74,4 +80,5 @@ def load_settings() -> Settings:
         cs_slug=_get("PANDASCORE_CS_SLUG", "cs-go") or "cs-go",
         top_tier_only=_parse_bool(_get("TOP_TIER_ONLY", "true"), True),
         alert_lead_minutes=int(_get("ALERT_LEAD_MINUTES", "30") or 30),
+        tier_allowlist=parse_tier_list(_get("TIERS", "s,a")),
     )

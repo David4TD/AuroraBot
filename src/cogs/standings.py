@@ -8,8 +8,8 @@ Flow:
     → render the standings table
 
 The season/split picker only offers **current** tournaments (running now, or
-starting within the week) and only Tier 1 / S-tier events — historical splits
-are filtered out rather than padding the dropdown.
+starting within the week) at the configured tiers — historical splits are
+filtered out rather than padding the dropdown.
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from ..services.pandascore import PandaScoreError
 from ..utils.choices import GAME_CHOICES
 from ..utils.embeds import BRAND, standings_embed
 from ..utils.games import rank_by_name, resolve_slug
-from ..utils.tiers import filter_top_tier
+from ..utils.tiers import describe, filter_for, tier_label
 from ..utils.tournaments import current_tournaments, parse_dt, tournament_label
 
 log = logging.getLogger("aurorabot.cogs.standings")
@@ -56,20 +56,41 @@ async def _show_tournaments(
             await interaction.followup.send(msg)
         return
 
-    # Current tournaments only, and only at the tier AuroraBot covers.
-    tournaments = current_tournaments(
-        filter_top_tier(tournaments, enabled=cog.bot.settings.top_tier_only)
+    # Current tournaments only, and only at the tier AuroraBot covers. The two
+    # filters are applied separately so the "nothing found" message can say
+    # which one emptied the list.
+    settings = cog.bot.settings
+    live = current_tournaments(tournaments)
+    eligible = filter_for(settings, live)
+
+    log.debug(
+        "standings %s: %d tournaments → %d current → %d in %s",
+        league.get("name"), len(tournaments), len(live), len(eligible), describe(settings),
     )
-    if not tournaments:
-        msg = (
-            f"**{league.get('name')}** has no Tier 1 tournament running at the moment "
-            f"— standings appear once the next split is under way."
-        )
+
+    if not eligible:
+        if live:
+            # Current events exist but sit below the tier bar — name them, so
+            # it's obvious this is the filter and not missing data.
+            found = ", ".join(
+                f"{tournament_label(t, max_len=40)} ({tier_label(t)})" for t in live[:3]
+            )
+            msg = (
+                f"**{league.get('name')}** is running, but nothing matches your tier "
+                f"filter (**{describe(settings)}**).\nCurrently on: {found}.\n"
+                f"Widen it with `TIERS=s,a,b` or set `TOP_TIER_ONLY=false`."
+            )
+        else:
+            msg = (
+                f"**{league.get('name')}** has no tournament running at the moment "
+                f"— standings appear once the next split is under way."
+            )
         if edit:
             await interaction.followup.send(msg, ephemeral=True)
         else:
             await interaction.followup.send(msg)
         return
+    tournaments = eligible
 
     embed = discord.Embed(
         title=f"🏆 {league.get('name')}",
@@ -121,11 +142,11 @@ class TournamentSelect(discord.ui.Select):
         for t in tournaments[:25]:
             begin = parse_dt(t.get("begin_at"))
             if begin is None:
-                hint = None
+                hint = tier_label(t)
             elif begin <= now:
-                hint = "running now"
+                hint = f"running now · {tier_label(t)}"
             else:
-                hint = f"starts {begin:%d %b}"
+                hint = f"starts {begin:%d %b} · {tier_label(t)}"
             options.append(
                 discord.SelectOption(
                     label=tournament_label(t),
