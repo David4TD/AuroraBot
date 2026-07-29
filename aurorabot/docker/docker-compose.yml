@@ -1,0 +1,47 @@
+# AuroraBot — docker-compose for local runs and Unraid (via compose plugin).
+# From the repo root:  docker compose -f docker/docker-compose.yml up -d --build
+services:
+  aurorabot:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    # For Unraid pulling a pre-built image instead of building, comment out
+    # `build:` above and uncomment the line below:
+    # image: ghcr.io/YOUR_GITHUB_USER/aurorabot:latest
+    image: aurorabot:latest
+    container_name: aurorabot
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      # These win over .env if set; defaults shown for clarity.
+      DATABASE_PATH: /app/data/aurorabot.db
+      HEALTH_PORT: "8080"
+    volumes:
+      # Persistent data: SQLite DB, cached tokens, logs.
+      - /mnt/user/appdata/aurorabot:/app/data
+    healthcheck:
+      test: ["CMD", "python", "/app/healthcheck.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    # The health server port is only needed if you want to scrape it externally.
+    # ports:
+    #   - "8080:8080"
+
+# ─── OPTIONAL: PostgreSQL variant ────────────────────────────────────────────
+# AuroraBot ships with SQLite (recommended for single-container Unraid setups).
+# If you prefer Postgres, uncomment the service below, add a Postgres driver
+# (asyncpg) to requirements.txt, and point DATABASE_PATH/DSN at it.
+#
+#  postgres:
+#    image: postgres:16-alpine
+#    container_name: aurorabot-db
+#    restart: unless-stopped
+#    environment:
+#      POSTGRES_USER: aurora
+#      POSTGRES_PASSWORD: change-me
+#      POSTGRES_DB: aurorabot
+#    volumes:
+#      - /mnt/user/appdata/aurorabot-db:/var/lib/postgresql/data
