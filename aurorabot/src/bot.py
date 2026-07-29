@@ -42,6 +42,12 @@ def configure_logging(level: str) -> None:
     )
     # discord.py is chatty at INFO for the gateway; keep it at WARNING.
     logging.getLogger("discord").setLevel(logging.WARNING)
+    # At DEBUG these two drown out AuroraBot's own lines — aiosqlite echoes
+    # every statement (including the full schema script on startup) and
+    # aiohttp.access logs each healthcheck poll. Pin them one level up so
+    # LOG_LEVEL=DEBUG stays usable for diagnosing the bot itself.
+    logging.getLogger("aiosqlite").setLevel(logging.INFO)
+    logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
 
 
 class AuroraBot(commands.Bot):
