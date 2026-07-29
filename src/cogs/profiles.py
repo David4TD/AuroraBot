@@ -71,7 +71,9 @@ class Profiles(commands.Cog):
         embed.add_field(name="Predictions", value=f"{won}/{total} ({acc})", inline=True)
         fav = user["favorite_game"]
         embed.add_field(
-            name="Favourite game", value=label_for(fav) if fav else "not set", inline=True
+            name="Default game",
+            value=label_for(fav) if fav else "not set — try `/setgame`",
+            inline=True,
         )
         if teams:
             embed.add_field(
@@ -152,16 +154,48 @@ class Profiles(commands.Cog):
             "Choose a team to unfollow:", view=view, ephemeral=True
         )
 
-    @app_commands.command(name="setgame", description="Set your favourite game.")
+    @app_commands.command(
+        name="setgame",
+        description="Set your default game for /live, /upcoming, /results and /predict.",
+    )
+    @app_commands.describe(game="Leave blank to clear your default.")
     @app_commands.choices(game=GAME_CHOICES)
     async def setgame(
-        self, interaction: discord.Interaction, game: app_commands.Choice[str]
+        self,
+        interaction: discord.Interaction,
+        game: app_commands.Choice[str] | None = None,
     ) -> None:
         await self.bot.db.ensure_user(interaction.user.id, interaction.user.display_name)
+
+        if game is None:
+            await self.bot.db.set_favorite_game(interaction.user.id, None)
+            await interaction.response.send_message(
+                embed=discord.Embed(
+                    description="⭐ Default game cleared — those commands now "
+                    "show every game again.",
+                    color=GREEN,
+                ),
+                ephemeral=True,
+            )
+            return
+
         await self.bot.db.set_favorite_game(interaction.user.id, game.value)
+        note = ""
+        # A default pointing at a game the server muted would silently do
+        # nothing, so say so instead of letting them wonder.
+        if game.value in await self.bot.db.disabled_games(interaction.guild_id):
+            note = (
+                f"\n\n⚠️ Heads up: **{game.name}** is currently muted on this "
+                f"server, so your default won't apply here until a mod "
+                f"re-enables it with `/games`."
+            )
         await interaction.response.send_message(
             embed=discord.Embed(
-                description=f"⭐ Favourite game set to **{game.name}**.", color=GREEN
+                description=f"⭐ Default game set to **{game.name}**.\n"
+                f"`/live`, `/upcoming`, `/results` and `/predict` will use it "
+                f"when you don't name a game. Run `/setgame` with no game to clear."
+                + note,
+                color=GREEN,
             ),
             ephemeral=True,
         )

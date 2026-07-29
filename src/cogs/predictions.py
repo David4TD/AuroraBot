@@ -103,15 +103,35 @@ class Predictions(commands.Cog):
     @app_commands.command(
         name="predict", description="Predict the winner of an upcoming Tier 1 match."
     )
+    @app_commands.describe(game="Game to predict. Defaults to your `/setgame` pick.")
     @app_commands.choices(game=GAME_CHOICES)
     async def predict(
-        self, interaction: discord.Interaction, game: app_commands.Choice[str]
+        self,
+        interaction: discord.Interaction,
+        game: app_commands.Choice[str] | None = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
-        if game.value in await self.bot.db.disabled_games(interaction.guild_id):
-            await interaction.followup.send(blocked_message(game.value), ephemeral=True)
-            return
-        slug = resolve_slug(game.value, self.bot.settings.cs_slug)
+        disabled = await self.bot.db.disabled_games(interaction.guild_id)
+
+        if game is not None:
+            game_key = game.value
+            if game_key in disabled:
+                await interaction.followup.send(blocked_message(game_key), ephemeral=True)
+                return
+        else:
+            # Unlike the browse commands there's no "all games" fallback here:
+            # a prediction needs one concrete match list, so ask for a game
+            # rather than guessing.
+            game_key = await self.bot.db.favorite_game(interaction.user.id)
+            if game_key is None or game_key in disabled:
+                await interaction.followup.send(
+                    "Pick a game — or set a default once with `/setgame` and "
+                    "`/predict` will use it from then on.",
+                    ephemeral=True,
+                )
+                return
+
+        slug = resolve_slug(game_key, self.bot.settings.cs_slug)
         try:
             matches = await self.bot.api.upcoming_matches(slug=slug, per_page=FETCH_SIZE)
         except PandaScoreError:
@@ -126,7 +146,7 @@ class Predictions(commands.Cog):
             )
             return
         view = discord.ui.View(timeout=120)
-        view.add_item(MatchSelect(self, eligible, game.value))
+        view.add_item(MatchSelect(self, eligible, game_key))
         await interaction.followup.send(
             "Choose a match, then pick your winner:", view=view, ephemeral=True
         )

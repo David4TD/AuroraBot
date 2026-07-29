@@ -103,7 +103,15 @@ class Database:
         )
         return await cur.fetchone()
 
-    async def set_favorite_game(self, discord_id: int, game: str) -> None:
+    async def favorite_game(self, discord_id: int) -> str | None:
+        """A user's default game for the browse commands, if they set one."""
+        cur = await self.conn.execute(
+            "SELECT favorite_game FROM users WHERE discord_id = ?", (str(discord_id),)
+        )
+        row = await cur.fetchone()
+        return row["favorite_game"] if row else None
+
+    async def set_favorite_game(self, discord_id: int, game: str | None) -> None:
         await self.conn.execute(
             "UPDATE users SET favorite_game = ?, updated_at = datetime('now') "
             "WHERE discord_id = ?",

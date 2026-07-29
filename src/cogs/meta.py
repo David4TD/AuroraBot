@@ -36,7 +36,8 @@ class Meta(commands.Cog):
         )
         embed.add_field(
             name="👤 Profile",
-            value="`/profile` · `/follow` · `/unfollow` · `/setgame`",
+            value="`/profile` · `/follow` · `/unfollow`\n"
+            "`/setgame` — your default game for the commands above",
             inline=False,
         )
         embed.add_field(

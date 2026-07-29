@@ -40,17 +40,30 @@ class Scores(commands.Cog):
 
     async def _gate(
         self, interaction: discord.Interaction, game: app_commands.Choice[str] | None
-    ) -> tuple[bool, set[str]]:
-        """Apply this server's game toggles.
+    ) -> tuple[bool, set[str], str | None]:
+        """Resolve which game to show, honouring the server's toggles.
 
-        Returns ``(allowed, disabled)``. When the user named a muted game the
-        caller should bail out — ``_gate`` has already replied explaining why.
+        Returns ``(allowed, disabled, game_key)``. When the user named a muted
+        game the caller should bail out — ``_gate`` has already replied
+        explaining why.
+
+        With no game named, the user's `/setgame` default applies. A default
+        pointing at a muted game is ignored rather than erroring: it's a
+        standing preference, not something they typed just now, so falling
+        back to the full feed is friendlier than a complaint.
         """
         disabled = await self.bot.db.disabled_games(interaction.guild_id)
-        if game and game.value in disabled:
-            await interaction.followup.send(blocked_message(game.value))
-            return False, disabled
-        return True, disabled
+
+        if game is not None:
+            if game.value in disabled:
+                await interaction.followup.send(blocked_message(game.value))
+                return False, disabled, None
+            return True, disabled, game.value
+
+        default = await self.bot.db.favorite_game(interaction.user.id)
+        if default and default not in disabled:
+            return True, disabled, default
+        return True, disabled, None
 
     def _for_guild(self, matches: list[dict], disabled: set[str]) -> list[dict]:
         return filter_enabled(matches, disabled, self.bot.settings.cs_slug)
@@ -58,16 +71,16 @@ class Scores(commands.Cog):
     @app_commands.command(
         name="live", description="Show Tier 1 matches happening right now."
     )
-    @app_commands.describe(game="Filter by a specific game (optional).")
+    @app_commands.describe(game="Filter by a game. Defaults to your `/setgame` pick.")
     @app_commands.choices(game=GAME_CHOICES)
     async def live(
         self, interaction: discord.Interaction, game: app_commands.Choice[str] | None = None
     ) -> None:
         await interaction.response.defer(thinking=True)
-        allowed, disabled = await self._gate(interaction, game)
+        allowed, disabled, game_key = await self._gate(interaction, game)
         if not allowed:
             return
-        slug = self._slug(game.value) if game else None
+        slug = self._slug(game_key) if game_key else None
         try:
             matches = self._for_guild(
                 self._top_tier(
@@ -92,22 +105,22 @@ class Scores(commands.Cog):
             )
             return
 
-        embeds = [match_embed(m, game.value if game else None) for m in matches[:SHOW]]
+        embeds = [match_embed(m, game_key) for m in matches[:SHOW]]
         await interaction.followup.send(
             content=f"🔴 **{len(matches)} live Tier 1 match(es)**", embeds=embeds
         )
 
     @app_commands.command(name="upcoming", description="Show upcoming Tier 1 matches.")
-    @app_commands.describe(game="Filter by a specific game (optional).")
+    @app_commands.describe(game="Filter by a game. Defaults to your `/setgame` pick.")
     @app_commands.choices(game=GAME_CHOICES)
     async def upcoming(
         self, interaction: discord.Interaction, game: app_commands.Choice[str] | None = None
     ) -> None:
         await interaction.response.defer(thinking=True)
-        allowed, disabled = await self._gate(interaction, game)
+        allowed, disabled, game_key = await self._gate(interaction, game)
         if not allowed:
             return
-        slug = self._slug(game.value) if game else None
+        slug = self._slug(game_key) if game_key else None
         try:
             matches = self._for_guild(
                 self._top_tier(
@@ -121,22 +134,22 @@ class Scores(commands.Cog):
         if not matches:
             await interaction.followup.send(NO_TOP_TIER_MATCHES)
             return
-        embeds = [match_embed(m, game.value if game else None) for m in matches[:SHOW]]
+        embeds = [match_embed(m, game_key) for m in matches[:SHOW]]
         await interaction.followup.send(content="🗓️ **Upcoming · Tier 1**", embeds=embeds)
 
     @app_commands.command(
         name="results", description="Show recent finished Tier 1 matches."
     )
-    @app_commands.describe(game="Filter by a specific game (optional).")
+    @app_commands.describe(game="Filter by a game. Defaults to your `/setgame` pick.")
     @app_commands.choices(game=GAME_CHOICES)
     async def results(
         self, interaction: discord.Interaction, game: app_commands.Choice[str] | None = None
     ) -> None:
         await interaction.response.defer(thinking=True)
-        allowed, disabled = await self._gate(interaction, game)
+        allowed, disabled, game_key = await self._gate(interaction, game)
         if not allowed:
             return
-        slug = self._slug(game.value) if game else None
+        slug = self._slug(game_key) if game_key else None
         try:
             matches = self._for_guild(
                 self._top_tier(
@@ -150,7 +163,7 @@ class Scores(commands.Cog):
         if not matches:
             await interaction.followup.send(NO_TOP_TIER_MATCHES)
             return
-        embeds = [match_embed(m, game.value if game else None) for m in matches[:SHOW]]
+        embeds = [match_embed(m, game_key) for m in matches[:SHOW]]
         await interaction.followup.send(content="✅ **Recent results · Tier 1**", embeds=embeds)
 
 

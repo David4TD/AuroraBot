@@ -74,12 +74,24 @@ class AuroraBot(commands.Bot):
             self.log.info("Loaded %s", ext)
 
         # Command sync: instant per-guild in dev, global otherwise.
+        #
+        # The two scopes are additive in Discord: a command registered both
+        # globally and on a guild shows up TWICE in that guild's picker. So
+        # whichever scope we're using, the other one has to be emptied.
         if self.settings.dev_guild_ids:
             for gid in self.settings.dev_guild_ids:
                 guild = discord.Object(id=gid)
                 self.tree.copy_global_to(guild=guild)
                 synced = await self.tree.sync(guild=guild)
                 self.log.info("Synced %d commands to dev guild %s", len(synced), gid)
+
+            # Drop any global registrations left over from a previous run that
+            # booted without DEV_GUILD_IDS, which would otherwise duplicate
+            # every command. Clearing the local tree then syncing pushes an
+            # empty global set; the cogs repopulate it on the next startup.
+            self.tree.clear_commands(guild=None)
+            await self.tree.sync()
+            self.log.info("Cleared global commands (dev guild sync is active)")
         else:
             synced = await self.tree.sync()
             self.log.info("Synced %d global commands", len(synced))
