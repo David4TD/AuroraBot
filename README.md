@@ -108,65 +108,16 @@ The bot logs in, syncs its slash commands and starts the health server on
 `http://localhost:8080/health`.
 
 ---
+1. In Unraid Docker:
+   - Pull ghcr.io/david4td/aurorabot:latest
 
-## 🐳 Docker
-
-Build and run with compose (from the repo root):
-
-```bash
-cp .env.example .env        # fill in your secrets
-docker compose -f docker/docker-compose.yml up -d --build
-docker compose -f docker/docker-compose.yml logs -f
-```
-
-Data (SQLite DB + logs) persists to the mounted volume. Locally that path is
-`/mnt/user/appdata/aurorabot` — change it in `docker-compose.yml` if you're not
-on Unraid.
-
-Health status:
-
-```bash
-curl http://localhost:8080/health     # {"healthy": true, ...}  (expose the port first)
-docker inspect --format '{{.State.Health.Status}}' aurorabot
-```
-
----
-
-## 🖥️ Unraid Deployment
-
-You have two options. **Option A (recommended)** pulls a pre-built image from
-GHCR so nothing is compiled on your Unraid box.
-
-### Option A — Community Applications template (pull pre-built image)
-
-1. **Publish the image** (once): push this repo to GitHub. The included
-   GitHub Actions workflow (`.github/workflows/docker-publish.yml`) builds the
-   image and pushes it to **GHCR** as
-   `ghcr.io/YOUR_GITHUB_USER/aurorabot:latest` on every push to `main`.
-   Make the package **public** (GitHub → Packages → aurorabot → Package
-   settings → Change visibility) so Unraid can pull it without credentials.
-
-2. **Add the template** to Unraid. Edit `docker/aurorabot.xml` and replace
-   every `YOUR_GITHUB_USER` with your GitHub username, then copy it to:
-
-   ```
-   /boot/config/plugins/dockerMan/templates-user/my-AuroraBot.xml
-   ```
-
-   (You can do this over the Unraid SMB share `\\TOWER\flash\config\plugins\dockerMan\templates-user\`
-   or via the terminal.)
-
-3. In the Unraid web UI go to the **Docker** tab → **Add Container**. In the
-   **Template** dropdown at the top, choose **my-AuroraBot**. The fields
-   pre-fill from the template.
-
-4. **Fill in the fields** in the Unraid GUI:
-   - **Discord Bot Token** — paste your token (field is password-masked).
-   - **PandaScore API Key** — paste your key (password-masked).
+1. **Create fields** in the Unraid GUI:
+   - **Variable DISCORD_TOKEN** — paste your token (field is password-masked).
+   - **Varible ESPORTS_API_KEY** — paste your PandaScore API Key (password-masked).
    - **AppData** — leave as `/mnt/user/appdata/aurorabot` (creates on first run).
    - Advanced fields (log level, poll interval, dev guild IDs) are optional.
 
-5. Click **Apply**. Unraid pulls the image and starts the container with
+2. Click **Apply**. Unraid pulls the image and starts the container with
    `restart: unless-stopped`, so it comes back automatically after a reboot.
 
 > **Community Apps note:** if you host the template in a GitHub repo and add it
@@ -259,8 +210,3 @@ Prefer Postgres? A commented-out service and guidance are in
 - Standings tables aren't available for every tournament (bracket-only events
   won't have them) — the bot tells the user when that's the case.
 
----
-
-## 📄 License
-
-MIT — see `LICENSE` (add your own).
