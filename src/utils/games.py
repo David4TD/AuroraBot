@@ -56,3 +56,27 @@ def game_choices() -> list[tuple[str, str]]:
 def label_for(key: str) -> str:
     g = GAMES.get(key)
     return g.label if g else key
+
+
+def rank_by_name(items: list[dict], query: str, name_key: str = "name") -> list[dict]:
+    """Rank API results so the closest name match to *query* comes first.
+
+    Order: exact (case-insensitive) → startswith → contains → other, and within
+    each tier the shortest name wins. This stops broad searches like ``LCK``
+    from resolving to ``LCK Academy`` when the main ``LCK`` league exists.
+    """
+    q = (query or "").strip().lower()
+
+    def score(item: dict) -> tuple[int, int]:
+        name = str(item.get(name_key) or "").strip().lower()
+        if name == q:
+            tier = 0
+        elif name.startswith(q):
+            tier = 1
+        elif q in name:
+            tier = 2
+        else:
+            tier = 3
+        return (tier, len(name))
+
+    return sorted(items, key=score)

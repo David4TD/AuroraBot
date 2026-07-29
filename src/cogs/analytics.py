@@ -10,7 +10,7 @@ from discord.ext import commands
 from ..services.pandascore import PandaScoreError
 from ..utils.choices import GAME_CHOICES
 from ..utils.embeds import analytics_embed
-from ..utils.games import resolve_slug
+from ..utils.games import rank_by_name, resolve_slug
 
 log = logging.getLogger("aurorabot.cogs.analytics")
 
@@ -44,7 +44,7 @@ class Analytics(commands.Cog):
             await interaction.followup.send(f"No team matched **{name}**.")
             return
 
-        team = teams[0]
+        team = rank_by_name(teams, name)[0]
         try:
             full = await self.bot.api.get_team(team["id"])
             recent = await self.bot.api.team_matches(team["id"], per_page=12)

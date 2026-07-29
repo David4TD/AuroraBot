@@ -15,7 +15,7 @@ from discord.ext import commands, tasks
 from ..services.pandascore import PandaScoreError
 from ..utils.choices import GAME_CHOICES
 from ..utils.embeds import BRAND, GREEN, RED, match_embed
-from ..utils.games import label_for, resolve_slug
+from ..utils.games import label_for, rank_by_name, resolve_slug
 
 log = logging.getLogger("aurorabot.cogs.alerts")
 
@@ -66,16 +66,17 @@ class Alerts(commands.Cog):
         team_name: str | None = None
         if team:
             try:
-                matches = await self.bot.api.search_teams(team, slug=slug, per_page=1)
+                results = await self.bot.api.search_teams(team, slug=slug, per_page=25)
             except PandaScoreError:
-                matches = []
-            if not matches:
+                results = []
+            if not results:
                 await interaction.followup.send(
                     f"Couldn't find a team called **{team}**.", ephemeral=True
                 )
                 return
-            team_id = int(matches[0]["id"])
-            team_name = matches[0].get("name")
+            best = rank_by_name(results, team)[0]  # exact name wins over partials
+            team_id = int(best["id"])
+            team_name = best.get("name")
 
         ok = await self.bot.db.add_subscription(
             guild_id=interaction.guild_id,
