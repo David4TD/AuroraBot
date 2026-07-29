@@ -6,14 +6,14 @@
 -->
 <Container version="2">
   <Name>AuroraBot</Name>
-  <Repository>ghcr.io/YOUR_GITHUB_USER/aurorabot:latest</Repository>
-  <Registry>https://github.com/YOUR_GITHUB_USER/aurorabot/pkgs/container/aurorabot</Registry>
+  <Repository>ghcr.io/David4TD/aurorabot:latest</Repository>
+  <Registry>https://github.com/David4TD/aurorabot/pkgs/container/aurorabot</Registry>
   <Network>bridge</Network>
   <MyIP/>
   <Shell>bash</Shell>
   <Privileged>false</Privileged>
-  <Support>https://github.com/YOUR_GITHUB_USER/aurorabot/issues</Support>
-  <Project>https://github.com/YOUR_GITHUB_USER/aurorabot</Project>
+  <Support>https://github.com/David4TD/aurorabot/issues</Support>
+  <Project>https://github.com/David4TD/aurorabot</Project>
   <Overview>
     AuroraBot is a Discord bot for eSports fans. Follow live scores, standings,
     deep analytics and match alerts across League of Legends, CS2, Valorant,
@@ -25,7 +25,7 @@
   <Category>Tools: Other:</Category>
   <WebUI/>
   <TemplateURL/>
-  <Icon>https://raw.githubusercontent.com/YOUR_GITHUB_USER/aurorabot/main/docker/icon.png</Icon>
+  <Icon>https://raw.githubusercontent.com/David4TD/aurorabot/main/docker/icon.png</Icon>
   <ExtraParams>--health-cmd="python /app/healthcheck.py" --health-interval=30s --health-timeout=10s --health-retries=3</ExtraParams>
   <PostArgs/>
   <CPUset/>
