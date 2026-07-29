@@ -64,10 +64,21 @@ def current_tournaments(
 
 
 def tournament_label(tournament: dict, *, max_len: int = 100) -> str:
-    """``LEC Summer 2026 · Playoffs`` — serie context plus the stage name."""
+    """``LEC Summer 2026 · Playoffs`` — league, serie context, then the stage.
+
+    The league name is what tells LEC apart from LCS, so it always leads. Its
+    serie ``full_name`` is usually only the split ("Summer 2026"), which on a
+    cross-league list like the ``/alerts add`` autocomplete leaves several
+    tournaments sharing one label. Series that already name their league
+    ("LEC Summer 2026") are left alone rather than stuttering.
+    """
     serie = (tournament.get("serie") or {}).get("full_name") or ""
     league = (tournament.get("league") or {}).get("name") or ""
     name = tournament.get("name") or "Stage"
-    head = serie or league
+
+    head = serie
+    if league and league.casefold() not in serie.casefold():
+        head = f"{league} {serie}".strip()
+
     label = f"{head} · {name}".strip(" ·") if head else str(name)
     return label[:max_len] or "Tournament"
