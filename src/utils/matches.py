@@ -6,7 +6,7 @@ re-implemented per cog.
 """
 from __future__ import annotations
 
-from .games import key_for_slug
+from .games import key_for_videogame
 
 
 def game_key_of(match: dict, cs_override: str | None = None) -> str | None:
@@ -16,8 +16,7 @@ def game_key_of(match: dict, cs_override: str | None = None) -> str | None:
     matches are left alone by the per-guild toggles, since there's no switch to
     turn them off with.
     """
-    videogame = match.get("videogame") or {}
-    return key_for_slug(videogame.get("slug"), cs_override)
+    return key_for_videogame(match.get("videogame"), cs_override)
 
 
 def opponents(match: dict) -> list[dict]:

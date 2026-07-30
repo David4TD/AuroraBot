@@ -24,7 +24,7 @@ class PandaScoreError(Exception):
 
 
 class PandaScoreClient:
-    def __init__(self, api_key: str, cs_slug: str = "cs-go") -> None:
+    def __init__(self, api_key: str, cs_slug: str = "csgo") -> None:
         self._api_key = api_key
         self.cs_slug = cs_slug
         self._session: aiohttp.ClientSession | None = None

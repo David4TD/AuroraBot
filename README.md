@@ -217,7 +217,7 @@ docker compose -f docker/docker-compose.yml up -d
 | `DIGEST_HOUR` | | `0` | Local hour the digest posts |
 | `HEALTH_PORT` | | `8080` | Internal health server port |
 | `LOG_LEVEL` | | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
-| `PANDASCORE_CS_SLUG` | | `cs-go` | PandaScore slug for Counter-Strike |
+| `PANDASCORE_CS_SLUG` | | `csgo` | Route segment for Counter-Strike |
 
 ---
 

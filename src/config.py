@@ -55,7 +55,7 @@ class Settings:
     alert_poll_seconds: int = 60
     health_port: int = 8080
     log_level: str = "INFO"
-    cs_slug: str = "cs-go"
+    cs_slug: str = "csgo"
     top_tier_only: bool = True
     alert_lead_minutes: int = 30
     # PandaScore tier letters that count as "Tier 1". Their S is majors-only
@@ -87,7 +87,7 @@ def load_settings() -> Settings:
         alert_poll_seconds=int(_get("ALERT_POLL_SECONDS", "60") or 60),
         health_port=int(_get("HEALTH_PORT", "8080") or 8080),
         log_level=_get("LOG_LEVEL", "INFO") or "INFO",
-        cs_slug=_get("PANDASCORE_CS_SLUG", "cs-go") or "cs-go",
+        cs_slug=_get("PANDASCORE_CS_SLUG", "csgo") or "csgo",
         top_tier_only=_parse_bool(_get("TOP_TIER_ONLY", "true"), True),
         alert_lead_minutes=int(_get("ALERT_LEAD_MINUTES", "30") or 30),
         tier_allowlist=parse_tier_list(_get("TIERS", "s,a")),
