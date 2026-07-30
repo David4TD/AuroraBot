@@ -25,6 +25,7 @@ Requires discord.py >= 2.5 for the application-emoji API.
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import re
 import time
@@ -32,6 +33,7 @@ from typing import TYPE_CHECKING
 
 import aiohttp
 import discord
+from PIL import Image, UnidentifiedImageError
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..database.db import Database
@@ -43,17 +45,65 @@ log = logging.getLogger("aurorabot.emojis")
 MAX_EMOJIS = 1900
 EVICT_BATCH = 25
 
-# Discord rejects emoji images over 256 KiB. We have no image library to
-# downscale with, so oversized logos are simply skipped.
+# Discord rejects emoji assets over 256 KiB. Every logo is re-encoded to a
+# small PNG first, so the practical output is a few KB and this is only a
+# backstop. The *download* cap is generous because the source may be large.
 MAX_IMAGE_BYTES = 256 * 1024
+MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024
+
+# Emoji render at ~32px; 128 keeps them crisp on hi-dpi without bloating.
+EMOJI_EDGE = 128
 
 UPLOADS_PER_WINDOW = 15
 WINDOW_SECONDS = 60.0
 BACKOFF_SECONDS = 300.0          # after a 429 or repeated failures
 QUEUE_LIMIT = 500
 
+# A logo Discord refuses will be refused every time, so stop after this many
+# attempts instead of re-queueing it on every render.
+MAX_ATTEMPTS = 2
+
 _NAME_SAFE = re.compile(r"[^a-z0-9_]+")
-_ALLOWED_CONTENT = ("image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp")
+
+
+def normalise_image(raw: bytes) -> bytes | None:
+    """Re-encode any logo into a Discord-safe emoji asset.
+
+    Discord's emoji endpoint answers ``50046 Invalid Asset`` for formats it
+    won't take (notably **WebP**, which discord.py's mime sniffer happily
+    forwards) and for oversized assets. PandaScore serves a mix, so rather than
+    guess, every logo is decoded and re-encoded here as a square RGBA PNG of at
+    most :data:`EMOJI_EDGE` px.
+
+    Square-padding rather than stretching keeps wide wordmark logos legible.
+    Returns ``None`` if the bytes aren't a decodable image.
+    """
+    try:
+        with Image.open(io.BytesIO(raw)) as img:
+            # Animated sources collapse to their first frame: a still PNG is
+            # better than an emoji Discord might reject.
+            img.seek(0) if getattr(img, "is_animated", False) else None
+            img = img.convert("RGBA")
+
+            img.thumbnail((EMOJI_EDGE, EMOJI_EDGE), Image.LANCZOS)
+
+            canvas = Image.new("RGBA", (EMOJI_EDGE, EMOJI_EDGE), (0, 0, 0, 0))
+            canvas.paste(
+                img,
+                ((EMOJI_EDGE - img.width) // 2, (EMOJI_EDGE - img.height) // 2),
+            )
+
+            buf = io.BytesIO()
+            canvas.save(buf, format="PNG", optimize=True)
+            data = buf.getvalue()
+    except (UnidentifiedImageError, OSError, ValueError, MemoryError) as exc:
+        log.debug("Could not decode logo (%d bytes): %s", len(raw), exc)
+        return None
+
+    if len(data) > MAX_IMAGE_BYTES:  # pragma: no cover - 128px PNGs are tiny
+        log.debug("Normalised logo still too large: %d bytes", len(data))
+        return None
+    return data
 
 
 def emoji_name_for(team_id: int, team_name: str | None) -> str:
@@ -78,6 +128,9 @@ class TeamIconStore:
             maxsize=QUEUE_LIMIT
         )
         self._queued: set[int] = set()
+        # team_id → failed attempts. A logo Discord won't take never will, so
+        # give up rather than re-queue it on every single render.
+        self._attempts: dict[int, int] = {}
         self._session: aiohttp.ClientSession | None = None
         self._worker: asyncio.Task | None = None
         self._uploads: list[float] = []           # timestamps in the window
@@ -192,6 +245,8 @@ class TeamIconStore:
     def _enqueue(self, team_id: int, name: str, image_url: str) -> None:
         if team_id in self._queued or self._queue.full():
             return
+        if self._attempts.get(team_id, 0) >= MAX_ATTEMPTS:
+            return  # known bad logo; stop burning budget and log lines on it
         self._queued.add(team_id)
         try:
             self._queue.put_nowait((team_id, name, image_url))
@@ -224,6 +279,23 @@ class TeamIconStore:
             except Exception:  # noqa: BLE001 - the worker must outlive failures
                 log.exception("team icon minting failed")
 
+    def _note_failure(self, team_id: int, reason: str) -> None:
+        """Count a failure, warning once and then falling silent.
+
+        Without this, a logo Discord refuses is re-queued by every render, so
+        the same warning repeats forever and eats the upload budget.
+        """
+        attempts = self._attempts.get(team_id, 0) + 1
+        self._attempts[team_id] = attempts
+        if attempts >= MAX_ATTEMPTS:
+            log.info(
+                "Giving up on the icon for team %s after %d attempts (%s); "
+                "it will render without one",
+                team_id, attempts, reason,
+            )
+        else:
+            log.debug("Icon attempt %d failed for team %s: %s", attempts, team_id, reason)
+
     async def _mint(self, team_id: int, name: str, image_url: str) -> None:
         existing = await self.db.get_team_emoji(team_id)
         if existing and existing["image_url"] == image_url:
@@ -231,6 +303,7 @@ class TeamIconStore:
 
         payload = await self._download(image_url)
         if payload is None:
+            self._note_failure(team_id, "logo could not be fetched or decoded")
             return
 
         if await self.db.count_team_emojis() >= MAX_EMOJIS:
@@ -247,9 +320,10 @@ class TeamIconStore:
                 log.warning("Emoji rate limit hit; pausing icon minting for %ds",
                             int(BACKOFF_SECONDS))
             else:
-                log.warning("Could not create emoji for team %s: %s", team_id, exc)
+                self._note_failure(team_id, str(exc))
             return
 
+        self._attempts.pop(team_id, None)
         self._uploads.append(time.monotonic())
         self._emoji_objects[emoji.id] = emoji
 
@@ -268,6 +342,12 @@ class TeamIconStore:
         log.debug("Minted icon for team %s (%s)", team_id, emoji.name)
 
     async def _download(self, url: str) -> bytes | None:
+        """Fetch a logo and re-encode it into a Discord-safe PNG.
+
+        The Content-Type is logged but not gatekept: CDNs mislabel assets, and
+        :func:`normalise_image` decodes from the bytes anyway, so trusting the
+        header would reject perfectly good logos.
+        """
         if self._session is None or self._session.closed:
             return None
         try:
@@ -275,23 +355,23 @@ class TeamIconStore:
                 if resp.status != 200:
                     log.debug("Logo fetch %s returned %s", url, resp.status)
                     return None
-                content_type = (resp.headers.get("Content-Type") or "").split(";")[0]
-                if content_type.lower() not in _ALLOWED_CONTENT:
-                    log.debug("Logo %s has unsupported type %s", url, content_type)
-                    return None
-                # Guard on the header when present, then again on the body,
-                # since Content-Length is advisory.
                 declared = resp.headers.get("Content-Length")
-                if declared and int(declared) > MAX_IMAGE_BYTES:
+                if declared and int(declared) > MAX_DOWNLOAD_BYTES:
+                    log.debug("Logo %s too large to fetch (%s bytes)", url, declared)
                     return None
-                data = await resp.content.read(MAX_IMAGE_BYTES + 1)
-                if len(data) > MAX_IMAGE_BYTES:
-                    log.debug("Logo %s exceeds %d bytes", url, MAX_IMAGE_BYTES)
+                raw = await resp.content.read(MAX_DOWNLOAD_BYTES + 1)
+                if len(raw) > MAX_DOWNLOAD_BYTES:
+                    log.debug("Logo %s exceeded the download cap", url)
                     return None
-                return data
+                content_type = (resp.headers.get("Content-Type") or "?").split(";")[0]
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
             log.debug("Logo fetch failed for %s: %s", url, exc)
             return None
+
+        data = normalise_image(raw)
+        if data is None:
+            log.debug("Logo %s (%s) could not be normalised", url, content_type)
+        return data
 
     async def _evict(self) -> None:
         """Delete the coldest icons to free room under the cap."""

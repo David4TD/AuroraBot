@@ -80,9 +80,16 @@ How it behaves, by design:
   unknown teams. A `429` pauses minting for five minutes.
 - **The cap is respected.** Nearing 2000, least-recently-used icons are deleted
   so long-tail teams don't squat.
-- **Failure is invisible.** An oversized logo (>256 KiB, Discord's limit),
-  a dead URL or a revoked permission just leaves plain text — the standings
-  table falls back to the team's country flag.
+- **Every logo is re-encoded before upload.** Discord's emoji endpoint answers
+  `50046 Invalid Asset` for formats it won't take — notably **WebP**, which
+  discord.py's mime sniffer forwards happily — and for oversized assets.
+  PandaScore serves a mix, so Pillow decodes each logo and re-encodes it as a
+  square 128px RGBA PNG (a few hundred bytes), padding wide wordmarks rather
+  than stretching them.
+- **Failure is invisible, and remembered.** A dead URL, an SVG or a revoked
+  permission leaves plain text, and the standings table falls back to the
+  team's country flag. After two failed attempts a team is given up on, so a
+  logo Discord refuses can't be re-queued by every render.
 - **Restarts are free.** The `team_emojis` table maps team → emoji, and startup
   reconciles it against the emojis actually owned, dropping stale rows.
 

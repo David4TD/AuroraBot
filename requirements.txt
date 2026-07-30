@@ -4,3 +4,7 @@ discord.py==2.7.1
 aiohttp==3.9.5
 aiosqlite==0.20.0
 python-dotenv==1.0.1
+# Normalises team logos to small PNGs before upload. Discord's emoji endpoint
+# rejects WebP and oversized assets with "Invalid Asset" (50046), and PandaScore
+# serves a mix of formats and dimensions.
+Pillow==12.3.0
