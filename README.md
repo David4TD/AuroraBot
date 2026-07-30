@@ -104,7 +104,7 @@ How it behaves, by design:
 - **Restarts are free.** The `team_emojis` table maps team → emoji, and startup
   reconciles it against the emojis actually owned, dropping stale rows.
 - **Blobs are cached on the appdata volume.** Normalised PNGs land in
-  `/app/data/logos/` (`/mnt/user/appdata/aurorabot/logos` on Unraid) as
+  `/appdata/logos/` (`/mnt/user/appdata/aurorabot/logos` on Unraid) as
   `{team_id}-{url hash}.png`. A logo is fetched from PandaScore once and never
   again — the `team_emojis` row short-circuits every render, and if an emoji ever
   has to be re-created (LRU eviction, a manual deletion in the developer portal,
@@ -312,8 +312,25 @@ The bot logs in, syncs its slash commands and starts the health server on
 1. **Create fields** in the Unraid GUI:
    - **Variable DISCORD_TOKEN** — paste your token (field is password-masked).
    - **Varible ESPORTS_API_KEY** — paste your PandaScore API Key (password-masked).
-   - **AppData** — leave as `/mnt/user/appdata/aurorabot` (creates on first run).
+   - **Path** (⚠️ not a Variable — this one is easy to miss):
+     | Field | Value |
+     |---|---|
+     | Config Type | **Path** |
+     | Container Path | `/appdata` |
+     | Host Path | `/mnt/user/appdata/aurorabot` |
+     | Access Mode | Read/Write |
    - Advanced fields (log level, poll interval, dev guild IDs) are optional.
+
+   > **Skip the Path mapping and the bot still runs — but silently loses data.**
+   > The image declares `VOLUME ["/appdata"]`, so Docker creates an *anonymous*
+   > volume instead of failing. Nothing appears under
+   > `/mnt/user/appdata/aurorabot`, and every container recreate (including
+   > **Force Update**) starts from an empty database. Verify with:
+   > ```bash
+   > docker inspect aurorabot --format '{{json .Mounts}}'
+   > ```
+   > You want `"Type":"bind"` with `"Source":"/mnt/user/appdata/aurorabot"`. A
+   > `"Type":"volume"` with a long hex name means the mapping is missing.
 
 2. Click **Apply**. Unraid pulls the image and starts the container with
    `restart: unless-stopped`, so it comes back automatically after a reboot.
@@ -336,7 +353,7 @@ The bot logs in, syncs its slash commands and starts the health server on
 Everything persistent is on the appdata volume:
 
 ```
-/mnt/user/appdata/aurorabot/
+/mnt/user/appdata/aurorabot/          <- host path, mapped to /appdata
 ├── aurorabot.db        # SQLite database (users, follows, predictions, alerts)
 ├── aurorabot.db-wal    # write-ahead log
 ├── aurorabot.db-shm
@@ -374,7 +391,7 @@ Because the database lives on the mounted volume, updates never lose data.
 |----------|:--------:|---------|-------------|
 | `DISCORD_TOKEN` | ✅ | — | Discord bot token |
 | `ESPORTS_API_KEY` | ✅ | — | PandaScore API key |
-| `DATABASE_PATH` | | `/app/data/aurorabot.db` | SQLite file path (inside container) |
+| `DATABASE_PATH` | | `/appdata/aurorabot.db` | SQLite file path (inside container) |
 | `DEV_GUILD_IDS` | | _(empty)_ | Comma-separated guild IDs for instant command sync |
 | `ALERT_POLL_SECONDS` | | `60` | Match poll interval |
 | `ALERT_LEAD_MINUTES` | | `30` | Minutes before kick-off to post the reminder |

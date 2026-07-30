@@ -60,7 +60,7 @@
 
   <Config Name="Database Path"
           Target="DATABASE_PATH"
-          Default="/app/data/aurorabot.db"
+          Default="/appdata/aurorabot.db"
           Mode=""
           Description="Path to the SQLite DB inside the container (keep default)."
           Type="Variable"
@@ -139,7 +139,7 @@
           Mask="false"/>
 
   <Config Name="AppData (persistent data)"
-          Target="/app/data"
+          Target="/appdata"
           Default="/mnt/user/appdata/aurorabot"
           Mode="rw"
           Description="Persistent storage for the SQLite database and logs."

@@ -16,13 +16,14 @@ FROM python:3.11-slim AS runtime
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     HEALTH_PORT=8080 \
-    DATABASE_PATH=/app/data/aurorabot.db
+    DATABASE_PATH=/appdata/aurorabot.db
 
-# Create a non-root user and the data dir it will own.
+# Create a non-root user, plus the data dir it will own. /appdata sits outside
+# WORKDIR, so it needs its own chown — `chown -R /app` does not reach it.
 RUN groupadd --gid 1000 aurora \
     && useradd --uid 1000 --gid aurora --shell /bin/bash --create-home aurora \
-    && mkdir -p /app/data \
-    && chown -R aurora:aurora /app
+    && mkdir -p /appdata \
+    && chown -R aurora:aurora /app /appdata
 
 WORKDIR /app
 
@@ -38,8 +39,14 @@ COPY --chown=aurora:aurora docker/healthcheck.py ./healthcheck.py
 
 USER aurora
 
-# Persist SQLite DB + logs on the mounted volume.
-VOLUME ["/app/data"]
+# Persist SQLite DB + cached logos on the mounted volume.
+#
+# NOTE: because this VOLUME is declared, Docker creates an *anonymous* volume
+# when no bind mount is supplied rather than failing — so a container started
+# without the /appdata mapping writes happily to a directory that never
+# appears on the host, and loses it whenever the container is recreated.
+# Always map /appdata to a host path (Unraid: /mnt/user/appdata/aurorabot).
+VOLUME ["/appdata"]
 
 EXPOSE 8080
 

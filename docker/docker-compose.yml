@@ -15,11 +15,11 @@ services:
       - ../.env
     environment:
       # These win over .env if set; defaults shown for clarity.
-      DATABASE_PATH: /app/data/aurorabot.db
+      DATABASE_PATH: /appdata/aurorabot.db
       HEALTH_PORT: "8080"
     volumes:
       # Persistent data: SQLite DB, cached tokens, logs.
-      - /mnt/user/appdata/aurorabot:/app/data
+      - /mnt/user/appdata/aurorabot:/appdata
     healthcheck:
       test: ["CMD", "python", "/app/healthcheck.py"]
       interval: 30s

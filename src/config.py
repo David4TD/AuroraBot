@@ -72,7 +72,7 @@ def load_settings() -> Settings:
     return Settings(
         discord_token=_get("DISCORD_TOKEN", required=True),
         pandascore_key=_get("ESPORTS_API_KEY", required=True),
-        database_path=_get("DATABASE_PATH", "/app/data/aurorabot.db"),
+        database_path=_get("DATABASE_PATH", "/appdata/aurorabot.db"),
         dev_guild_ids=_parse_guild_ids(_get("DEV_GUILD_IDS", "")),
         alert_poll_seconds=int(_get("ALERT_POLL_SECONDS", "60") or 60),
         health_port=int(_get("HEALTH_PORT", "8080") or 8080),
