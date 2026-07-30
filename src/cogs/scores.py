@@ -16,8 +16,8 @@ from discord.ext import commands
 from ..services.pandascore import PandaScoreError
 from ..utils.choices import GAME_CHOICES
 from ..utils.embeds import RED, match_embed
-from ..utils.games import resolve_slug
-from ..utils.guildgames import blocked_message, filter_enabled
+from ..utils.games import ALL_GAME_KEYS, resolve_slug
+from ..utils.guildgames import blocked_message, filter_enabled, no_games_message
 from ..utils.tiers import NO_TOP_TIER_MATCHES, filter_for
 
 log = logging.getLogger("aurorabot.cogs.scores")
@@ -41,32 +41,41 @@ class Scores(commands.Cog):
     async def _gate(
         self, interaction: discord.Interaction, game: app_commands.Choice[str] | None
     ) -> tuple[bool, set[str], str | None]:
-        """Resolve which game to show, honouring the server's toggles.
+        """Resolve which game to show, honouring the server's selection.
 
-        Returns ``(allowed, disabled, game_key)``. When the user named a muted
-        game the caller should bail out — ``_gate`` has already replied
-        explaining why.
+        Returns ``(allowed, enabled, game_key)``. When the server follows
+        nothing, or the user named a game it doesn't follow, the caller should
+        bail out — ``_gate`` has already replied explaining why.
 
         With no game named, the user's `/setgame` default applies. A default
-        pointing at a muted game is ignored rather than erroring: it's a
-        standing preference, not something they typed just now, so falling
-        back to the full feed is friendlier than a complaint.
+        pointing at a game this server doesn't follow is ignored rather than
+        erroring: it's a standing preference, not something they typed just now,
+        so falling back to the server's full selection is friendlier.
         """
-        disabled = await self.bot.db.disabled_games(interaction.guild_id)
+        # In a DM there is no server whose selection to respect, and no channel
+        # to keep tidy, so everything is available.
+        enabled = (
+            await self.bot.db.enabled_games(interaction.guild_id)
+            if interaction.guild_id
+            else set(ALL_GAME_KEYS)
+        )
+        if not enabled:
+            await interaction.followup.send(no_games_message())
+            return False, enabled, None
 
         if game is not None:
-            if game.value in disabled:
+            if game.value not in enabled:
                 await interaction.followup.send(blocked_message(game.value))
-                return False, disabled, None
-            return True, disabled, game.value
+                return False, enabled, None
+            return True, enabled, game.value
 
         default = await self.bot.db.favorite_game(interaction.user.id)
-        if default and default not in disabled:
-            return True, disabled, default
-        return True, disabled, None
+        if default and default in enabled:
+            return True, enabled, default
+        return True, enabled, None
 
-    def _for_guild(self, matches: list[dict], disabled: set[str]) -> list[dict]:
-        return filter_enabled(matches, disabled, self.bot.settings.cs_slug)
+    def _for_guild(self, matches: list[dict], enabled: set[str]) -> list[dict]:
+        return filter_enabled(matches, enabled, self.bot.settings.cs_slug)
 
     @app_commands.command(
         name="live", description="Show Tier 1 matches happening right now."
@@ -77,7 +86,7 @@ class Scores(commands.Cog):
         self, interaction: discord.Interaction, game: app_commands.Choice[str] | None = None
     ) -> None:
         await interaction.response.defer(thinking=True)
-        allowed, disabled, game_key = await self._gate(interaction, game)
+        allowed, enabled, game_key = await self._gate(interaction, game)
         if not allowed:
             return
         slug = self._slug(game_key) if game_key else None
@@ -86,7 +95,7 @@ class Scores(commands.Cog):
                 self._top_tier(
                     await self.bot.api.running_matches(slug=slug, per_page=FETCH_SIZE)
                 ),
-                disabled,
+                enabled,
             )
         except PandaScoreError as exc:
             log.warning("live failed: %s", exc)
@@ -117,7 +126,7 @@ class Scores(commands.Cog):
         self, interaction: discord.Interaction, game: app_commands.Choice[str] | None = None
     ) -> None:
         await interaction.response.defer(thinking=True)
-        allowed, disabled, game_key = await self._gate(interaction, game)
+        allowed, enabled, game_key = await self._gate(interaction, game)
         if not allowed:
             return
         slug = self._slug(game_key) if game_key else None
@@ -126,7 +135,7 @@ class Scores(commands.Cog):
                 self._top_tier(
                     await self.bot.api.upcoming_matches(slug=slug, per_page=FETCH_SIZE)
                 ),
-                disabled,
+                enabled,
             )
         except PandaScoreError:
             await interaction.followup.send("The scores service is unavailable right now.")
@@ -146,7 +155,7 @@ class Scores(commands.Cog):
         self, interaction: discord.Interaction, game: app_commands.Choice[str] | None = None
     ) -> None:
         await interaction.response.defer(thinking=True)
-        allowed, disabled, game_key = await self._gate(interaction, game)
+        allowed, enabled, game_key = await self._gate(interaction, game)
         if not allowed:
             return
         slug = self._slug(game_key) if game_key else None
@@ -155,7 +164,7 @@ class Scores(commands.Cog):
                 self._top_tier(
                     await self.bot.api.past_matches(slug=slug, per_page=FETCH_SIZE)
                 ),
-                disabled,
+                enabled,
             )
         except PandaScoreError:
             await interaction.followup.send("The scores service is unavailable right now.")

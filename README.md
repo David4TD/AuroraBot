@@ -23,7 +23,7 @@ Built with **discord.py 2.x**, containerised for one-click **Unraid** deployment
 | **Predictions** | `/predict`, `/mypredictions`, `/leaderboard` |
 | **Alerts** | `/alerts add`, `/alerts list`, `/alerts remove` |
 | **Schedule** | `/schedule` — post today's matches now |
-| **Games** | `/games` — pick which titles this server follows |
+| **Games** | `/games` — pick which titles this server follows (**required first**) |
 | **Meta** | `/help`, `/ping` |
 
 ---
@@ -57,12 +57,24 @@ match replies privately, so voting doesn't clutter the channel.
 
 `/schedule` posts the current day immediately. Both need *Manage Server*.
 
-## 🎮 Per-server games
+## 🎮 Per-server games — start here
 
-`/games` shows which titles this server follows; members with *Manage Server*
-get a multi-select to change it. Muting a game removes it from the unfiltered
-feeds and silences its alerts. Asking for it explicitly still answers, saying
-it's muted. Existing subscriptions are kept and resume when you re-enable it.
+**Games are opt-in.** A server follows nothing until someone with *Manage
+Server* runs `/games` and picks, so AuroraBot never posts about titles nobody
+asked for. Until then it stays idle and the commands say so.
+
+`/games` shows the current selection and offers a multi-select, plus **Follow
+all** / **Follow none** shortcuts. A followed game appears in the feeds and its
+alerts fire; an unfollowed one is dropped and its alert poll is skipped
+entirely, so it costs no API call. Asking for it explicitly still answers,
+saying the server doesn't follow it. Existing `/alerts` subscriptions for a
+removed game are kept and resume if you add it back.
+
+Choosing games also **pre-warms the tournament cache** for them, so the first
+`/alerts add` autocomplete is instant. A background loop keeps it warm, and only
+for games someone actually follows.
+
+DMs have no server to configure, so every game is available there.
 
 ## 🏆 What "Tier 1" means
 
@@ -236,6 +248,7 @@ shuts down cleanly.
 
 ## 📝 Troubleshooting
 
+- **Nothing happens at all** — the server hasn't picked games yet. Run `/games`.
 - **Empty feeds** — usually the tier filter. Try `TOP_TIER_ONLY=false` to confirm.
 - **No standings** — bracket-only stages have no table; try the group stage.
 - **Commands appear twice** — a leftover global command set alongside a guild

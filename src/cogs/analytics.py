@@ -36,7 +36,9 @@ class Analytics(commands.Cog):
         game: app_commands.Choice[str] | None = None,
     ) -> None:
         await interaction.response.defer(thinking=True)
-        if game and game.value in await self.bot.db.disabled_games(interaction.guild_id):
+        if (game and interaction.guild_id
+                and game.value not in await self.bot.db.enabled_games(
+                    interaction.guild_id)):
             await interaction.followup.send(blocked_message(game.value))
             return
         slug = resolve_slug(game.value, self.bot.settings.cs_slug) if game else None

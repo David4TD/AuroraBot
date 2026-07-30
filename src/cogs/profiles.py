@@ -185,7 +185,7 @@ class Profiles(commands.Cog):
         note = ""
         # A default pointing at a game the server muted would silently do
         # nothing, so say so instead of letting them wonder.
-        if game.value in await self.bot.db.disabled_games(interaction.guild_id):
+        if game.value not in await self.bot.db.enabled_games(interaction.guild_id):
             note = (
                 f"\n\n⚠️ Heads up: **{game.name}** is currently muted on this "
                 f"server, so your default won't apply here until a mod "

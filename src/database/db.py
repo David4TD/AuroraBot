@@ -28,10 +28,12 @@ class Database:
         self._conn = await aiosqlite.connect(self.path)
         self._conn.row_factory = aiosqlite.Row
         await self._conn.execute("PRAGMA foreign_keys = ON;")
-        # Migrations first: schema.sql assumes the current column set (it
-        # indexes tournament_id, which pre-1.1 databases don't have yet).
+        # Column changes first, because schema.sql indexes columns a pre-1.1
+        # database doesn't have yet. Data migrations run afterwards, once every
+        # table they touch is guaranteed to exist.
         await self._migrate()
         await self._run_schema()
+        await self._migrate_data()
         log.info("SQLite ready at %s", self.path)
 
     async def close(self) -> None:
@@ -94,11 +96,86 @@ class Database:
             await self._conn.execute("DROP INDEX IF EXISTS idx_alertsub_unique")
             await self._conn.commit()
 
+    async def _migrate_data(self) -> None:
+        """Data migrations, run after schema.sql so every table exists."""
+        assert self._conn is not None
+        await self._migrate_games_to_optin()
+
+    async def _migrate_games_to_optin(self) -> None:
+        """Flip /games from opt-out to opt-in without silencing existing servers.
+
+        The old model stored *disabled* games and treated a missing row as
+        enabled, so a server that never ran /games followed everything. Under
+        opt-in a missing row means "not following", so applying the new rule
+        blindly would mute every existing server until someone noticed.
+
+        So: drop the enabled=0 rows (absence now carries that meaning), and for
+        any guild that was actively using alerts but never curated its games,
+        write explicit rows for the whole catalogue — preserving exactly what it
+        followed before. Guilds that *had* run /games already have enabled=1
+        rows, which mean the right thing unchanged.
+
+        Guarded by a meta flag because "no rows" is indistinguishable between a
+        fresh guild and a migrated one.
+        """
+        from ..utils.games import GAMES
+
+        if await self.meta_get("games_optin") == "1":
+            return
+
+        cur = await self._conn.execute(
+            "SELECT COUNT(*) AS n FROM guild_games WHERE enabled = 0"
+        )
+        stale = int((await cur.fetchone())["n"])
+
+        cur = await self._conn.execute(
+            """
+            SELECT DISTINCT guild_id FROM alert_subscriptions
+            WHERE guild_id IS NOT NULL
+              AND guild_id NOT IN (
+                  SELECT guild_id FROM guild_games WHERE enabled = 1
+              )
+            """
+        )
+        inherit = [row["guild_id"] for row in await cur.fetchall()]
+
+        if stale:
+            await self._conn.execute("DELETE FROM guild_games WHERE enabled = 0")
+        if inherit:
+            await self._conn.executemany(
+                "INSERT OR IGNORE INTO guild_games (guild_id, game, enabled) "
+                "VALUES (?, ?, 1)",
+                [(gid, key) for gid in inherit for key in GAMES],
+            )
+        await self._conn.commit()
+        await self.meta_set("games_optin", "1")
+
+        if stale or inherit:
+            log.info(
+                "Migrated /games to opt-in: cleared %d disabled rows, "
+                "carried existing selections for %d guild(s)",
+                stale, len(inherit),
+            )
+
     @property
     def conn(self) -> aiosqlite.Connection:
         if self._conn is None:
             raise RuntimeError("Database.connect() has not been awaited yet")
         return self._conn
+
+    # ── schema metadata ──────────────────────────────────────────────────────
+    async def meta_get(self, key: str) -> str | None:
+        cur = await self.conn.execute("SELECT value FROM meta WHERE key = ?", (key,))
+        row = await cur.fetchone()
+        return row["value"] if row else None
+
+    async def meta_set(self, key: str, value: str) -> None:
+        await self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+        await self.conn.commit()
 
     # ── users ────────────────────────────────────────────────────────────────
     async def ensure_user(self, discord_id: int, display_name: str) -> None:
@@ -232,55 +309,71 @@ class Database:
         )
         return list(await cur.fetchall())
 
-    # ── per-guild game toggles ───────────────────────────────────────────────
-    async def disabled_games(self, guild_id: int | None) -> set[str]:
-        """Games this server has switched off. Empty for DMs / untouched guilds."""
+    # ── per-guild game selection (opt-in) ────────────────────────────────────
+    async def enabled_games(self, guild_id: int | None) -> set[str]:
+        """Games this server has opted into. Empty means "follows nothing".
+
+        DMs have no guild, so they get the empty set and every guild-scoped
+        feature declines politely rather than guessing.
+        """
         if guild_id is None:
             return set()
         cur = await self.conn.execute(
-            "SELECT game FROM guild_games WHERE guild_id = ? AND enabled = 0",
+            "SELECT game FROM guild_games WHERE guild_id = ? AND enabled = 1",
             (str(guild_id),),
         )
         return {row["game"] for row in await cur.fetchall()}
 
-    async def all_disabled_games(self) -> dict[str, set[str]]:
-        """``{guild_id: {disabled games}}`` — one query for the alert poll."""
+    async def all_enabled_games(self) -> dict[str, set[str]]:
+        """``{guild_id: {games}}`` — one query for the background loops."""
         cur = await self.conn.execute(
-            "SELECT guild_id, game FROM guild_games WHERE enabled = 0"
+            "SELECT guild_id, game FROM guild_games WHERE enabled = 1"
         )
         out: dict[str, set[str]] = {}
         for row in await cur.fetchall():
             out.setdefault(row["guild_id"], set()).add(row["game"])
         return out
 
+    async def distinct_enabled_games(self) -> set[str]:
+        """Every game any guild follows — what the tournament pre-warm needs."""
+        cur = await self.conn.execute(
+            "SELECT DISTINCT game FROM guild_games WHERE enabled = 1"
+        )
+        return {row["game"] for row in await cur.fetchall()}
+
     async def set_games(
         self, guild_id: int, enabled: set[str], known: set[str], updated_by: int
     ) -> None:
-        """Replace a guild's toggles in one shot from the /games panel.
+        """Replace a guild's selection from the /games panel.
 
-        *known* is the full game catalogue; anything in it that isn't in
-        *enabled* is written as disabled. Games outside *known* are left alone
-        so an unrecognised row can't be clobbered by a stale panel.
+        Enabled games get a row; the rest have theirs removed, so absence is the
+        single source of truth for "not following". Games outside *known* are
+        left alone, so a stale panel can't wipe an unrecognised row.
         """
-        rows = [
-            (str(guild_id), game, 1 if game in enabled else 0, str(updated_by))
-            for game in known
-        ]
-        await self.conn.executemany(
-            """
-            INSERT INTO guild_games (guild_id, game, enabled, updated_by)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(guild_id, game) DO UPDATE SET
-                enabled    = excluded.enabled,
-                updated_by = excluded.updated_by,
-                updated_at = datetime('now')
-            """,
-            rows,
-        )
+        keep = [(str(guild_id), g, str(updated_by)) for g in sorted(enabled & known)]
+        if keep:
+            await self.conn.executemany(
+                """
+                INSERT INTO guild_games (guild_id, game, enabled, updated_by)
+                VALUES (?, ?, 1, ?)
+                ON CONFLICT(guild_id, game) DO UPDATE SET
+                    enabled    = 1,
+                    updated_by = excluded.updated_by,
+                    updated_at = datetime('now')
+                """,
+                keep,
+            )
+        drop = sorted(known - enabled)
+        if drop:
+            placeholders = ",".join("?" * len(drop))
+            await self.conn.execute(
+                f"DELETE FROM guild_games WHERE guild_id = ? AND game IN ({placeholders})",
+                (str(guild_id), *drop),
+            )
         await self.conn.commit()
 
-    async def reset_games(self, guild_id: int) -> int:
-        """Clear all toggles, returning the guild to "every game enabled"."""
+    async def clear_games(self, guild_id: int) -> int:
+        """Drop every selection, returning the guild to following nothing."""
         cur = await self.conn.execute(
             "DELETE FROM guild_games WHERE guild_id = ?", (str(guild_id),)
         )

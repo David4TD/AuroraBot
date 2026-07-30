@@ -37,9 +37,12 @@ log = logging.getLogger("aurorabot.cogs.alerts")
 # Reaction → which of the two teams the user is backing.
 PICK_EMOJI = ("1️⃣", "2️⃣")
 
-# Autocomplete hits PandaScore on every keystroke; a short cache keeps the
-# 3-second interaction budget comfortable and the rate limit happy.
-TOURNAMENT_CACHE_SECONDS = 120
+# Autocomplete must answer inside 3 seconds, so it can never afford a live API
+# call. The cache TTL is deliberately long — current tournaments change on the
+# order of days, not minutes — and a background loop refreshes it well before it
+# expires, so in practice the autocomplete is always served warm.
+TOURNAMENT_CACHE_SECONDS = 30 * 60
+WARM_EVERY_MINUTES = 10
 
 FETCH_SIZE = 50
 PRUNE_AFTER_DAYS = 3
@@ -69,12 +72,53 @@ class Alerts(commands.Cog):
     async def cog_load(self) -> None:
         self.poll_loop.change_interval(seconds=self.bot.settings.alert_poll_seconds)
         self.poll_loop.start()
+        self.warm_loop.start()
 
     async def cog_unload(self) -> None:
         self.poll_loop.cancel()
+        self.warm_loop.cancel()
         for task in self._warming.values():
             task.cancel()
         self._warming.clear()
+
+    # ── cache pre-warming ────────────────────────────────────────────────────
+    def prewarm(self, game_keys: set[str]) -> None:
+        """Start warming the tournament cache for these games, without waiting.
+
+        Called on startup and whenever /games changes, so the first
+        `/alerts add` autocomplete is served from cache rather than racing
+        Discord's 3-second deadline.
+        """
+        for key in game_keys:
+            task = self._warming.get(key)
+            if task is not None and not task.done():
+                continue
+            cached = self._tournament_cache.get(key)
+            if cached and (
+                datetime.now(timezone.utc) - cached[0]
+            ).total_seconds() < TOURNAMENT_CACHE_SECONDS / 2:
+                continue        # still comfortably fresh
+            self._warming[key] = asyncio.create_task(self._refresh_tournaments(key))
+
+    @tasks.loop(minutes=WARM_EVERY_MINUTES)
+    async def warm_loop(self) -> None:
+        """Keep the tournament cache warm for every game any server follows.
+
+        Refreshing on a shorter period than the TTL means the autocomplete never
+        has to wait on the network. Only *followed* games are warmed, so the
+        cost scales with what's actually in use — nothing at all until someone
+        runs /games.
+        """
+        try:
+            games = await self.bot.db.distinct_enabled_games()
+            if games:
+                self.prewarm(games)
+        except Exception:  # noqa: BLE001 - keep the loop alive
+            log.exception("tournament pre-warm failed")
+
+    @warm_loop.before_loop
+    async def _before_warm(self) -> None:
+        await self.bot.wait_until_ready()
 
     def _slug(self, game_key: str) -> str:
         return resolve_slug(game_key, self.bot.settings.cs_slug)
@@ -249,7 +293,7 @@ class Alerts(commands.Cog):
             return
 
         # Refuse up front rather than storing a subscription the poll will skip.
-        if game.value in await self.bot.db.disabled_games(interaction.guild_id):
+        if game.value not in await self.bot.db.enabled_games(interaction.guild_id):
             await interaction.followup.send(blocked_message(game.value), ephemeral=True)
             return
 
@@ -490,19 +534,18 @@ class Alerts(commands.Cog):
         if not subs:
             return
 
-        # Honour each server's /games toggles before picking which feeds to
-        # fetch, so a muted game costs no API call at all. Subscriptions made
-        # before a game was muted stay in the table and simply go quiet — they
-        # resume if it's switched back on.
-        disabled_by_guild = await self.bot.db.all_disabled_games()
-        if disabled_by_guild:
-            subs = [
-                s
-                for s in subs
-                if s["game"] not in disabled_by_guild.get(str(s["guild_id"]), frozenset())
-            ]
-            if not subs:
-                return
+        # Honour each server's /games selection before picking which feeds to
+        # fetch, so an unfollowed game costs no API call at all. Subscriptions
+        # for a game later removed stay in the table and simply go quiet — they
+        # resume if it's re-added.
+        enabled_by_guild = await self.bot.db.all_enabled_games()
+        subs = [
+            s
+            for s in subs
+            if s["game"] in enabled_by_guild.get(str(s["guild_id"]), frozenset())
+        ]
+        if not subs:
+            return
 
         lead = self.bot.settings.alert_lead_minutes
         now = datetime.now(timezone.utc)

@@ -127,6 +127,23 @@ class AuroraBot(commands.Bot):
             except Exception:  # noqa: BLE001 - icons are cosmetic, never fatal
                 self.log.exception("Team icon store failed to start; continuing without")
 
+            # Warm the tournament cache for whatever servers actually follow,
+            # so the first /alerts add autocomplete is served from cache instead
+            # of racing Discord's 3-second deadline. Nothing to do until someone
+            # has run /games.
+            try:
+                games = await self.db.distinct_enabled_games()
+                alerts = self.get_cog("Alerts")
+                if games and alerts is not None:
+                    alerts.prewarm(games)
+                    self.log.info("Pre-warming tournaments for %s", ", ".join(sorted(games)))
+                else:
+                    self.log.info(
+                        "No games selected yet — run /games in a server to start"
+                    )
+            except Exception:  # noqa: BLE001 - a cold cache is only slower
+                self.log.exception("Tournament pre-warm failed; continuing")
+
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching, name="the servers | /help"

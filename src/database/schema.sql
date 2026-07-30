@@ -4,6 +4,15 @@
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
+-- ─── Schema metadata ───────────────────────────────────────────────────────
+-- One-shot migration flags. Needed where a migration cannot be detected from
+-- the table shape alone — flipping /games from opt-out to opt-in, for one:
+-- "no rows" is indistinguishable between a fresh guild and a migrated one.
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 -- ─── Users ──────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS users (
     discord_id      TEXT PRIMARY KEY,
@@ -42,10 +51,12 @@ CREATE TABLE IF NOT EXISTS team_emojis (
     last_used_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- ─── Per-guild game toggles ─────────────────────────────────────────────────
--- Only *disabled* games need a row: a missing row means enabled, so a server
--- that never touches /games follows everything, and games added to the
--- catalogue later switch on by default instead of silently staying off.
+-- ─── Per-guild game selection (opt-in) ──────────────────────────────────────
+-- A row means the guild follows that game. **No row means it does not** — a
+-- server follows nothing until someone runs /games, so AuroraBot never posts
+-- into a channel about titles nobody asked for. The `enabled` column is kept
+-- for the migration path from the old opt-out model; current code only ever
+-- writes 1 and deletes rows to switch a game off.
 CREATE TABLE IF NOT EXISTS guild_games (
     guild_id    TEXT NOT NULL,
     game        TEXT NOT NULL,
@@ -165,6 +176,6 @@ CREATE INDEX IF NOT EXISTS idx_alertsub_game       ON alert_subscriptions(game);
 CREATE INDEX IF NOT EXISTS idx_followed_user       ON followed_teams(discord_id);
 CREATE INDEX IF NOT EXISTS idx_alerted_at          ON alerted_matches(alerted_at);
 CREATE INDEX IF NOT EXISTS idx_alertmsg_created    ON alert_messages(created_at);
-CREATE INDEX IF NOT EXISTS idx_guildgames_disabled ON guild_games(guild_id) WHERE enabled = 0;
+CREATE INDEX IF NOT EXISTS idx_guildgames_enabled  ON guild_games(guild_id) WHERE enabled = 1;
 CREATE INDEX IF NOT EXISTS idx_teamemoji_lru       ON team_emojis(last_used_at);
 CREATE INDEX IF NOT EXISTS idx_digest_date         ON match_digests(local_date);

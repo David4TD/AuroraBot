@@ -233,10 +233,10 @@ class Digest(commands.Cog):
         if not subs:
             return
 
-        # Respect /games mutes, same as the alert poll.
-        muted = await self.bot.db.all_disabled_games()
+        # Respect each server's /games selection, same as the alert poll.
+        enabled = await self.bot.db.all_enabled_games()
         for sub in subs:
-            if sub["game"] in muted.get(str(sub["guild_id"]), frozenset()):
+            if sub["game"] not in enabled.get(str(sub["guild_id"]), frozenset()):
                 continue
             await self._post_digest(sub, today)
 

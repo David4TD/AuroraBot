@@ -1,35 +1,49 @@
-"""Enforcement helpers for the per-server game toggles (`/games`).
+"""Enforcement helpers for the per-server game selection (`/games`).
 
-Two shapes are needed and they behave differently on purpose:
+**Games are opt-in.** A server follows nothing until someone runs `/games`, so
+AuroraBot never posts about titles nobody asked for. That makes the empty set
+meaningful rather than a bug, and it's why every helper here takes the *enabled*
+set rather than a set of exclusions.
 
-* :func:`blocked_message` — the user named a muted game explicitly. Say so,
-  rather than returning an empty list that looks like an outage.
-* :func:`filter_enabled` — an unfiltered feed spanning every title. Silently
-  drop the muted ones; that's the whole point of the toggle.
+Three shapes are needed, and they differ deliberately:
 
-Titles outside the catalogue (:data:`utils.games.GAMES`) are never dropped —
-there's no switch to turn them off with, so filtering them would be a setting
-the user can't see or undo.
+* :func:`no_games_message` — the server hasn't chosen anything yet. Explain how,
+  rather than replying "nothing found" as though the API were empty.
+* :func:`blocked_message` — the user named a game the server doesn't follow. Say
+  which one, rather than returning an empty list that looks like an outage.
+* :func:`filter_enabled` — an unfiltered feed spanning every title. Silently drop
+  what isn't followed; that's the whole point.
 """
 from __future__ import annotations
 
 from .games import label_for
 from .matches import game_key_of
 
+NO_GAMES = (
+    "This server isn't following any games yet. A member with *Manage Server* "
+    "can pick them with `/games`."
+)
+
+
+def no_games_message() -> str:
+    return NO_GAMES
+
 
 def blocked_message(game_key: str) -> str:
     return (
-        f"**{label_for(game_key)}** is muted on this server. "
-        f"A member with *Manage Server* can re-enable it with `/games`."
+        f"This server doesn't follow **{label_for(game_key)}**. "
+        f"A member with *Manage Server* can add it with `/games`."
     )
 
 
 def filter_enabled(
-    matches: list[dict], disabled: set[str], cs_override: str | None = None
+    matches: list[dict], enabled: set[str], cs_override: str | None = None
 ) -> list[dict]:
-    """Drop matches belonging to a muted game."""
-    if not disabled:
-        return matches
-    return [
-        m for m in matches if game_key_of(m, cs_override) not in disabled
-    ]
+    """Keep only matches belonging to a game the server follows.
+
+    Titles outside the catalogue can never be in *enabled*, so they're dropped
+    too — correct under opt-in, where nothing appears unless it was chosen.
+    """
+    if not enabled:
+        return []
+    return [m for m in matches if game_key_of(m, cs_override) in enabled]

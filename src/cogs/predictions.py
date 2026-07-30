@@ -21,8 +21,8 @@ from discord.ext import tasks
 from ..services.pandascore import PandaScoreError
 from ..utils.choices import GAME_CHOICES
 from ..utils.embeds import BRAND
-from ..utils.games import resolve_slug
-from ..utils.guildgames import blocked_message
+from ..utils.games import ALL_GAME_KEYS, resolve_slug
+from ..utils.guildgames import blocked_message, no_games_message
 from ..utils.matches import opponents
 from ..utils.predictions import WIN_REWARD, submit_prediction
 from ..utils.regions import event_flag
@@ -131,11 +131,18 @@ class Predictions(commands.Cog):
         game: app_commands.Choice[str] | None = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
-        disabled = await self.bot.db.disabled_games(interaction.guild_id)
+        enabled = (
+            await self.bot.db.enabled_games(interaction.guild_id)
+            if interaction.guild_id
+            else set(ALL_GAME_KEYS)      # DMs have no server selection
+        )
+        if not enabled:
+            await interaction.followup.send(no_games_message(), ephemeral=True)
+            return
 
         if game is not None:
             game_key = game.value
-            if game_key in disabled:
+            if game_key not in enabled:
                 await interaction.followup.send(blocked_message(game_key), ephemeral=True)
                 return
         else:
@@ -143,7 +150,7 @@ class Predictions(commands.Cog):
             # a prediction needs one concrete match list, so ask for a game
             # rather than guessing.
             game_key = await self.bot.db.favorite_game(interaction.user.id)
-            if game_key is None or game_key in disabled:
+            if game_key is None or game_key not in enabled:
                 await interaction.followup.send(
                     "Pick a game — or set a default once with `/setgame` and "
                     "`/predict` will use it from then on.",

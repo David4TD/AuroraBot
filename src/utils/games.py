@@ -31,6 +31,8 @@ GAMES: dict[str, Game] = {
     "mlbb": Game("mlbb", "Mobile Legends", "mlbb", "📱"),
 }
 
+ALL_GAME_KEYS: frozenset[str] = frozenset(GAMES)
+
 # External reference sites the user follows, surfaced in analytics embeds.
 REFERENCE_SITES: dict[str, str] = {
     "lol": "https://gol.gg",          # LoL stats (RFT/gol.gg style deep stats)

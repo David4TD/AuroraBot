@@ -47,9 +47,9 @@ class Meta(commands.Cog):
             inline=False,
         )
         embed.add_field(
-            name="🎮 Games",
-            value="`/games` — see which titles this server follows "
-            "(mods can toggle them on and off)",
+            name="🎮 Games (start here)",
+            value="`/games` — pick which titles this server follows.\n"
+            "Games are opt-in: nothing works until a mod chooses some.",
             inline=False,
         )
         embed.add_field(
