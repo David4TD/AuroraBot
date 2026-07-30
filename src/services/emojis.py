@@ -152,6 +152,7 @@ class TeamIconStore:
         self.db = db
         self._cache: dict[int, str] = {}          # team_id → "<:name:id>"
         self._emoji_objects: dict[int, discord.Emoji] = {}   # emoji_id → Emoji
+        self._by_name: dict[str, discord.Emoji] = {}         # emoji_name → Emoji
         self._queue: asyncio.Queue[tuple[int, str, str]] = asyncio.Queue(
             maxsize=QUEUE_LIMIT
         )
@@ -187,6 +188,10 @@ class TeamIconStore:
             return
 
         self._emoji_objects = {e.id: e for e in existing}
+        # Emojis live on the application, not in our database, so they outlive
+        # a wiped appdata volume. Index by name too, so a missing row can adopt
+        # the emoji we already own instead of trying to create a duplicate.
+        self._by_name = {e.name: e for e in existing}
         by_id = set(self._emoji_objects)
 
         # Rebuild the in-memory cache, dropping rows whose emoji was deleted
@@ -329,6 +334,26 @@ class TeamIconStore:
         if existing and existing["image_url"] == image_url:
             return  # another path already cached it
 
+        emoji_name = emoji_name_for(team_id, name)
+
+        # Adopt an emoji we already own under this name. Happens whenever the
+        # database is newer than the application's emoji list — a recreated
+        # appdata volume, or a row cleared by reconciliation — and creating it
+        # again would fail with 50035 "already exists".
+        owned = self._by_name.get(emoji_name)
+        if owned is not None and (not existing or int(existing["emoji_id"]) != owned.id):
+            await self.db.put_team_emoji(
+                team_id=team_id,
+                emoji_id=owned.id,
+                emoji_name=owned.name,
+                image_url=image_url,
+                animated=owned.animated,
+            )
+            self._cache[team_id] = self._markdown(owned.name, owned.id, owned.animated)
+            self._attempts.pop(team_id, None)
+            log.debug("Adopted existing emoji %s for team %s", owned.name, team_id)
+            return
+
         payload = await self._download(image_url)
         if payload is None:
             self._note_failure(team_id, "logo could not be fetched or decoded")
@@ -337,7 +362,16 @@ class TeamIconStore:
         if await self.db.count_team_emojis() >= MAX_EMOJIS:
             await self._evict()
 
-        emoji_name = emoji_name_for(team_id, name)
+        # The logo changed and our own emoji already holds this name. Emoji
+        # names must be unique per application and there is no endpoint to
+        # replace an emoji's image, so the old one has to be removed *before*
+        # the replacement is created — otherwise creation fails with 50035 and
+        # a rebranded team can never update.
+        if owned is not None:
+            log.debug("Replacing emoji %s for team %s (logo changed)",
+                      owned.name, team_id)
+            await self._delete_emoji(owned.id)
+
         try:
             emoji = await self.bot.create_application_emoji(
                 name=emoji_name, image=payload
@@ -354,9 +388,11 @@ class TeamIconStore:
         self._attempts.pop(team_id, None)
         self._uploads.append(time.monotonic())
         self._emoji_objects[emoji.id] = emoji
+        self._by_name[emoji.name] = emoji
 
-        # Replace a rebranded logo's emoji only once the new one exists.
-        if existing:
+        # Clean up a stale emoji the row still pointed at — only if it wasn't
+        # the one we just removed to free the name above.
+        if existing and (owned is None or int(existing["emoji_id"]) != owned.id):
             await self._delete_emoji(int(existing["emoji_id"]))
 
         await self.db.put_team_emoji(
@@ -387,11 +423,28 @@ class TeamIconStore:
                 if declared and int(declared) > MAX_DOWNLOAD_BYTES:
                     log.debug("Logo %s too large to fetch (%s bytes)", url, declared)
                     return None
-                raw = await resp.content.read(MAX_DOWNLOAD_BYTES + 1)
-                if len(raw) > MAX_DOWNLOAD_BYTES:
-                    log.debug("Logo %s exceeded the download cap", url)
-                    return None
+
+                # Read the whole body by iterating chunks. StreamReader.read(n)
+                # reads *up to* n bytes and returns as soon as anything is
+                # available, so it silently yields only the first ~16 KB —
+                # which produced truncated PNGs that Discord then rejected as
+                # "Invalid Asset". Accumulating keeps the cap without
+                # truncating.
+                buf = bytearray()
+                async for chunk in resp.content.iter_chunked(64 * 1024):
+                    buf.extend(chunk)
+                    if len(buf) > MAX_DOWNLOAD_BYTES:
+                        log.debug("Logo %s exceeded the download cap", url)
+                        return None
+                raw = bytes(buf)
                 content_type = (resp.headers.get("Content-Type") or "?").split(";")[0]
+
+                if declared and len(raw) != int(declared):
+                    log.debug(
+                        "Logo %s: got %d bytes but Content-Length said %s",
+                        url, len(raw), declared,
+                    )
+                    return None
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
             log.debug("Logo fetch failed for %s: %s", url, exc)
             return None
@@ -413,6 +466,7 @@ class TeamIconStore:
         emoji = self._emoji_objects.pop(emoji_id, None)
         if emoji is None:
             return
+        self._by_name.pop(emoji.name, None)
         try:
             await emoji.delete()
         except discord.HTTPException as exc:

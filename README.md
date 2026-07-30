@@ -80,22 +80,23 @@ How it behaves, by design:
   unknown teams. A `429` pauses minting for five minutes.
 - **The cap is respected.** Nearing 2000, least-recently-used icons are deleted
   so long-tail teams don't squat.
-- **Every logo is re-encoded before upload.** Discord answers `50046 Invalid
-  Asset` for emoji assets it considers oversized, and the enforced threshold is
-  far below the documented 256 KiB. Measured against real PandaScore logos:
-
-  | Logo | Source | Result |
-  |---|---|---|
-  | Dplus KIA | 500×163, 4.9 KB | ✅ accepted |
-  | Team WE | 300×300, 13.8 KB | ✅ accepted |
-  | JD Gaming | 500×402, 18.9 KB | ❌ 50046 |
-  | Hanwha Life | 1000×1000, 45.6 KB | ❌ 50046 |
-
-  Format was never the problem — all of them are ordinary PNGs. Pillow re-encodes
-  each logo as a square 128px PNG, stepping down through 96/64/48px and palette
-  quantization until it fits a 12 KB budget (comfortably under the largest size
-  observed to succeed). The same ten logos now come out at 1.3–11.5 KB. Wide
-  wordmarks are padded onto a transparent square rather than stretched.
+- **Logos are downloaded whole.** `StreamReader.read(n)` reads *up to* n bytes
+  and returns as soon as anything is available, so it yielded only the first
+  ~16 KB — a truncated PNG that Discord then refused with `50046 Invalid
+  Asset`. Logos under one chunk arrived intact and worked, which made it look
+  convincingly like a size limit; it never was. The body is now accumulated via
+  `iter_chunked`, and a length mismatch against `Content-Length` is treated as a
+  failed transfer rather than uploaded.
+- **Every logo is re-encoded before upload.** Pillow renders each one as a
+  square 128px PNG, stepping down through 96/64/48px with palette quantization
+  if needed to stay small. Wide wordmarks are padded onto a transparent square
+  rather than stretched. Real logos land at 1.3–11.5 KB from 4.9–89 KB sources.
+- **Emojis outlive the database.** They belong to the *application*, not to
+  appdata, so a recreated volume leaves them orphaned. Startup indexes owned
+  emojis by name and minting adopts a match instead of creating a duplicate
+  (`50035`). When a team rebrands, the old emoji is deleted *before* the
+  replacement is created, since names must be unique and there is no endpoint
+  to swap an emoji's image.
 - **Failure is invisible, and remembered.** A dead URL, an SVG or a revoked
   permission leaves plain text, and the standings table falls back to the
   team's country flag. After two failed attempts a team is given up on, so a

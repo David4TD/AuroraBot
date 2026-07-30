@@ -50,6 +50,8 @@ def configure_logging(level: str) -> None:
     # LOG_LEVEL=DEBUG stays usable for diagnosing the bot itself.
     logging.getLogger("aiosqlite").setLevel(logging.INFO)
     logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
+    # Pillow logs every PNG chunk it parses — dozens of lines per team logo.
+    logging.getLogger("PIL").setLevel(logging.INFO)
 
 
 class AuroraBot(commands.Bot):
