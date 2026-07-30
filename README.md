@@ -103,6 +103,15 @@ How it behaves, by design:
   logo Discord refuses can't be re-queued by every render.
 - **Restarts are free.** The `team_emojis` table maps team → emoji, and startup
   reconciles it against the emojis actually owned, dropping stale rows.
+- **Blobs are cached on the appdata volume.** Normalised PNGs land in
+  `/app/data/logos/` (`/mnt/user/appdata/aurorabot/logos` on Unraid) as
+  `{team_id}-{url hash}.png`. A logo is fetched from PandaScore once and never
+  again — the `team_emojis` row short-circuits every render, and if an emoji ever
+  has to be re-created (LRU eviction, a manual deletion in the developer portal,
+  a database restored without its emojis) the bytes come off disk instead of the
+  CDN. Writes are atomic, unreadable files are treated as misses so a partial
+  write self-heals, superseded versions are pruned on rebrand, and an
+  unwritable directory just disables the cache. Budget roughly 10 KB per team.
 
 > Emoji names are `{team}_{id}` (e.g. `t1_11`), so the list stays readable in
 > the Discord developer portal.
@@ -330,8 +339,14 @@ Everything persistent is on the appdata volume:
 /mnt/user/appdata/aurorabot/
 ├── aurorabot.db        # SQLite database (users, follows, predictions, alerts)
 ├── aurorabot.db-wal    # write-ahead log
-└── aurorabot.db-shm
+├── aurorabot.db-shm
+└── logos/              # cached team logo PNGs, ~10 KB each
+    ├── 318-4f2a1c9b8e01.png
+    └── 2574-9c1d33ef7a20.png
 ```
+
+`logos/` is a pure cache — deleting it costs one re-download per team, nothing
+more.
 
 Container logs are viewable from the Unraid Docker tab (click the container →
 **Logs**) or `docker logs aurorabot`.

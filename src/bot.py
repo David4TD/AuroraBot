@@ -66,7 +66,10 @@ class AuroraBot(commands.Bot):
         self.health = HealthState()
         self.health_server = HealthServer(self.health, settings.health_port)
         # NB: `icons`, not `emojis` — Client.emojis is already a property.
-        self.icons = TeamIconStore(self, self.db)
+        # Logo blobs cache alongside the database on the appdata volume.
+        self.icons = TeamIconStore(
+            self, self.db, cache_dir=settings.data_dir / "logos"
+        )
         self._icons_started = False
         self.log = logging.getLogger("aurorabot")
 

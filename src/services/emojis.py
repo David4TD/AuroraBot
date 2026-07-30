@@ -25,10 +25,13 @@ Requires discord.py >= 2.5 for the application-emoji API.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import logging
+import os
 import re
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import aiohttp
@@ -71,6 +74,117 @@ QUEUE_LIMIT = 500
 MAX_ATTEMPTS = 2
 
 _NAME_SAFE = re.compile(r"[^a-z0-9_]+")
+
+
+class LogoCache:
+    """Normalised logo PNGs on the appdata volume.
+
+    A logo is normally fetched from PandaScore exactly once — the ``team_emojis``
+    row short-circuits every later render — so this is not about the steady
+    state. It covers the cases where an emoji has to be re-created and the
+    source would otherwise be re-fetched: LRU eviction near the 2000 cap, an
+    emoji deleted by hand in the developer portal, or a database restored
+    without the matching emojis.
+
+    Files are named ``{team_id}-{url hash}.png`` so a rebranded logo lands in a
+    new file and the superseded one can be pruned. Anything unreadable is
+    treated as a miss, so a half-written file self-heals.
+    """
+
+    def __init__(self, directory: Path | None) -> None:
+        self.directory = Path(directory) if directory else None
+        self.enabled = False
+        self.hits = 0
+        self.misses = 0
+
+    def prepare(self) -> None:
+        """Create the directory, disabling the cache if that isn't possible."""
+        if self.directory is None:
+            return
+        try:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            probe = self.directory / ".writable"
+            probe.write_bytes(b"")
+            probe.unlink()
+        except OSError as exc:
+            log.warning(
+                "Logo cache at %s is not writable (%s); logos will be fetched "
+                "from PandaScore when an emoji needs re-creating",
+                self.directory, exc,
+            )
+            return
+        self.enabled = True
+
+    def _path(self, team_id: int, image_url: str) -> Path:
+        assert self.directory is not None
+        digest = hashlib.sha1(image_url.encode("utf-8")).hexdigest()[:12]
+        return self.directory / f"{team_id}-{digest}.png"
+
+    async def get(self, team_id: int, image_url: str) -> bytes | None:
+        if not self.enabled:
+            return None
+        path = self._path(team_id, image_url)
+
+        def _read() -> bytes | None:
+            try:
+                data = path.read_bytes()
+            except OSError:
+                return None
+            # A truncated write is worse than a miss, so sanity-check the magic.
+            if len(data) < 8 or data[:8] != b"\x89PNG\r\n\x1a\n":
+                return None
+            return data
+
+        data = await asyncio.to_thread(_read)
+        if data is None:
+            self.misses += 1
+            return None
+        self.hits += 1
+        log.debug("Logo cache hit for team %s (%d bytes)", team_id, len(data))
+        return data
+
+    async def put(self, team_id: int, image_url: str, data: bytes) -> None:
+        if not self.enabled:
+            return
+        path = self._path(team_id, image_url)
+
+        def _write() -> None:
+            # Write-then-rename so a crash can never leave a partial PNG that a
+            # later run would read back as valid.
+            tmp = path.with_suffix(".tmp")
+            try:
+                tmp.write_bytes(data)
+                os.replace(tmp, path)
+            except OSError as exc:
+                log.debug("Could not cache logo for team %s: %s", team_id, exc)
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                return
+            # Drop superseded versions of this team's logo.
+            for old in path.parent.glob(f"{team_id}-*.png"):
+                if old != path:
+                    try:
+                        old.unlink()
+                    except OSError:
+                        pass
+
+        await asyncio.to_thread(_write)
+
+    async def stats(self) -> tuple[int, int]:
+        """``(file count, total bytes)`` for the startup log line."""
+        if not self.enabled or self.directory is None:
+            return 0, 0
+
+        def _scan() -> tuple[int, int]:
+            files = list(self.directory.glob("*.png"))
+            return len(files), sum(f.stat().st_size for f in files)
+
+        try:
+            return await asyncio.to_thread(_scan)
+        except OSError:
+            return 0, 0
 
 
 def _render(img: "Image.Image", edge: int, quantize: bool) -> bytes:
@@ -147,9 +261,15 @@ def emoji_name_for(team_id: int, team_name: str | None) -> str:
 
 
 class TeamIconStore:
-    def __init__(self, bot: discord.Client, db: "Database") -> None:
+    def __init__(
+        self,
+        bot: discord.Client,
+        db: "Database",
+        cache_dir: Path | None = None,
+    ) -> None:
         self.bot = bot
         self.db = db
+        self.logos = LogoCache(cache_dir)
         self._cache: dict[int, str] = {}          # team_id → "<:name:id>"
         self._emoji_objects: dict[int, discord.Emoji] = {}   # emoji_id → Emoji
         self._by_name: dict[str, discord.Emoji] = {}         # emoji_name → Emoji
@@ -177,6 +297,7 @@ class TeamIconStore:
             )
             return
 
+        self.logos.prepare()
         self._session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=15)
         )
@@ -208,9 +329,13 @@ class TeamIconStore:
                 stale += 1
 
         self._worker = asyncio.create_task(self._run(), name="team-icon-minter")
+        files, size = await self.logos.stats()
         log.info(
-            "Team icons ready: %d cached, %d owned emojis, %d stale rows cleared",
+            "Team icons ready: %d cached, %d owned emojis, %d stale rows cleared; "
+            "logo cache %s (%d files, %.1f KiB)",
             len(self._cache), len(existing), stale,
+            self.logos.directory if self.logos.enabled else "disabled",
+            files, size / 1024,
         )
 
     async def close(self) -> None:
@@ -354,7 +479,7 @@ class TeamIconStore:
             log.debug("Adopted existing emoji %s for team %s", owned.name, team_id)
             return
 
-        payload = await self._download(image_url)
+        payload = await self._asset(team_id, image_url)
         if payload is None:
             self._note_failure(team_id, "logo could not be fetched or decoded")
             return
@@ -404,6 +529,17 @@ class TeamIconStore:
         )
         self._cache[team_id] = self._markdown(emoji.name, emoji.id, emoji.animated)
         log.debug("Minted icon for team %s (%s)", team_id, emoji.name)
+
+    async def _asset(self, team_id: int, image_url: str) -> bytes | None:
+        """The upload-ready PNG for a team: disk cache first, then the CDN."""
+        cached = await self.logos.get(team_id, image_url)
+        if cached is not None:
+            return cached
+
+        data = await self._download(image_url)
+        if data is not None:
+            await self.logos.put(team_id, image_url, data)
+        return data
 
     async def _download(self, url: str) -> bytes | None:
         """Fetch a logo and re-encode it into a Discord-safe PNG.
