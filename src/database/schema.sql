@@ -27,6 +27,21 @@ CREATE TABLE IF NOT EXISTS followed_teams (
     FOREIGN KEY (discord_id) REFERENCES users(discord_id) ON DELETE CASCADE
 );
 
+-- ─── Team logo → application emoji cache ────────────────────────────────────
+-- Discord renders images inline only as custom emoji, so each team's logo is
+-- uploaded once as an application emoji and referenced by id thereafter.
+-- image_url is kept so a rebranded logo can be detected and re-minted;
+-- last_used_at drives LRU eviction as the 2000-emoji cap approaches.
+CREATE TABLE IF NOT EXISTS team_emojis (
+    team_id      INTEGER PRIMARY KEY,   -- PandaScore team id
+    emoji_id     TEXT NOT NULL,
+    emoji_name   TEXT NOT NULL,
+    image_url    TEXT,
+    animated     INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    last_used_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- ─── Per-guild game toggles ─────────────────────────────────────────────────
 -- Only *disabled* games need a row: a missing row means enabled, so a server
 -- that never touches /games follows everything, and games added to the
@@ -115,3 +130,4 @@ CREATE INDEX IF NOT EXISTS idx_followed_user       ON followed_teams(discord_id)
 CREATE INDEX IF NOT EXISTS idx_alerted_at          ON alerted_matches(alerted_at);
 CREATE INDEX IF NOT EXISTS idx_alertmsg_created    ON alert_messages(created_at);
 CREATE INDEX IF NOT EXISTS idx_guildgames_disabled ON guild_games(guild_id) WHERE enabled = 0;
+CREATE INDEX IF NOT EXISTS idx_teamemoji_lru       ON team_emojis(last_used_at);

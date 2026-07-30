@@ -60,6 +60,40 @@ AuroraBot over-fetches and filters client-side in `src/utils/tiers.py`.
 
 > Sources: [Tournaments in-depth](https://developers.pandascore.co/docs/tournaments-in-depth)
 
+### 🏳️ Team logos (inline icons)
+
+Team logos appear **inline** — in the match line, standings rows, the winner
+buttons on `/predict`, and the `/follow` picker.
+
+Discord only renders an image inside text if it is a **custom emoji**, so each
+team's `image_url` is uploaded once as an *application emoji* (owned by the bot,
+usable in every server, 2000 cap) and referenced by id thereafter. This needs
+**discord.py ≥ 2.5**, hence the 2.7.1 pin.
+
+How it behaves, by design:
+
+- **Rendering never waits on the network.** A cache miss returns nothing and
+  queues the team; a background worker mints the emoji, so the *next* render
+  shows it. The first `/standings` for a new league is therefore mostly
+  flagless and fills in within seconds — it is warming, not broken.
+- **Uploads are throttled** (15/minute) because one command can reference 25
+  unknown teams. A `429` pauses minting for five minutes.
+- **The cap is respected.** Nearing 2000, least-recently-used icons are deleted
+  so long-tail teams don't squat.
+- **Failure is invisible.** An oversized logo (>256 KiB, Discord's limit),
+  a dead URL or a revoked permission just leaves plain text — the standings
+  table falls back to the team's country flag.
+- **Restarts are free.** The `team_emojis` table maps team → emoji, and startup
+  reconciles it against the emojis actually owned, dropping stale rows.
+
+> Emoji names are `{team}_{id}` (e.g. `t1_11`), so the list stays readable in
+> the Discord developer portal.
+
+**Layout note:** the matchup sits in the embed **description**, not the title.
+Discord does not render custom emoji in embed titles — they leak as raw
+`<:name:id>`, worst of all on mobile. The title carries the state and event,
+which is why region flags (plain unicode) work there but logos don't.
+
 ### 🌍 Region flags
 
 Events, tournaments and teams carry a region flag — 🇰🇷 LCK, 🇪🇺 LEC, 🇨🇳 LPL,
@@ -167,6 +201,7 @@ aurorabot/
 │   │   └── schema.sql         # idempotent schema (runs on startup)
 │   ├── services/
 │   │   ├── pandascore.py      # async PandaScore API client
+│   │   ├── emojis.py          # team logo → application emoji cache
 │   │   └── health.py          # lightweight aiohttp /health server
 │   ├── cogs/                  # one module per feature area
 │   │   ├── meta.py  scores.py  standings.py  analytics.py
@@ -323,8 +358,8 @@ Because the database lives on the mounted volume, updates never lose data.
 SQLite via `aiosqlite`, chosen so a single Unraid container needs no separate
 database service. The schema (`src/database/schema.sql`) is applied idempotently
 on every startup — safe across restarts and updates. Tables: `users`,
-`followed_teams`, `guild_games`, `alert_subscriptions`, `alerted_matches`,
-`alert_messages`, `predictions`.
+`followed_teams`, `guild_games`, `team_emojis`, `alert_subscriptions`,
+`alerted_matches`, `alert_messages`, `predictions`.
 
 Column changes are handled by `Database._migrate()`, which runs before the
 schema script and is guarded by `PRAGMA table_info` checks. Upgrading from an

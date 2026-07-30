@@ -18,6 +18,7 @@ from discord.ext import commands
 
 from .config import Settings, load_settings
 from .database.db import Database
+from .services.emojis import TeamIconStore
 from .services.health import HealthServer, HealthState
 from .services.pandascore import PandaScoreClient
 
@@ -62,6 +63,9 @@ class AuroraBot(commands.Bot):
         self.api = PandaScoreClient(settings.pandascore_key, cs_slug=settings.cs_slug)
         self.health = HealthState()
         self.health_server = HealthServer(self.health, settings.health_port)
+        # NB: `icons`, not `emojis` — Client.emojis is already a property.
+        self.icons = TeamIconStore(self, self.db)
+        self._icons_started = False
         self.log = logging.getLogger("aurorabot")
 
     async def setup_hook(self) -> None:
@@ -99,6 +103,17 @@ class AuroraBot(commands.Bot):
     async def on_ready(self) -> None:
         self.health.ready = True
         self.health.beat()
+
+        # Application emojis need application_id, which only arrives with
+        # READY — setup_hook runs before that. Guarded so a gateway resume
+        # doesn't restart the worker.
+        if not self._icons_started:
+            self._icons_started = True
+            try:
+                await self.icons.start()
+            except Exception:  # noqa: BLE001 - icons are cosmetic, never fatal
+                self.log.exception("Team icon store failed to start; continuing without")
+
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching, name="the servers | /help"
@@ -110,6 +125,7 @@ class AuroraBot(commands.Bot):
         self.log.info("Shutting down…")
         self.health.ready = False
         try:
+            await self.icons.close()
             await self.api.close()
             await self.db.close()
             await self.health_server.stop()

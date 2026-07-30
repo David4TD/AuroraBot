@@ -35,7 +35,21 @@ FETCH_SIZE = 50
 
 class TeamButton(discord.ui.Button):
     def __init__(self, cog: "Predictions", match: dict, team: dict, game_key: str) -> None:
-        super().__init__(label=team["name"][:80], style=discord.ButtonStyle.primary)
+        # `team` here is the trimmed {id, name} form, so look the logo up from
+        # the match payload where image_url actually lives.
+        full = next(
+            (
+                (o.get("opponent") or {})
+                for o in (match.get("opponents") or [])
+                if (o.get("opponent") or {}).get("id") == team["id"]
+            ),
+            team,
+        )
+        super().__init__(
+            label=team["name"][:80],
+            style=discord.ButtonStyle.primary,
+            emoji=cog.bot.icons.partial(full),
+        )
         self.cog = cog
         self.match = match
         self.team = team

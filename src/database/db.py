@@ -157,6 +157,64 @@ class Database:
         )
         return list(await cur.fetchall())
 
+    # ── team logo emoji cache ────────────────────────────────────────────────
+    async def all_team_emojis(self) -> list[aiosqlite.Row]:
+        cur = await self.conn.execute("SELECT * FROM team_emojis")
+        return list(await cur.fetchall())
+
+    async def get_team_emoji(self, team_id: int) -> aiosqlite.Row | None:
+        cur = await self.conn.execute(
+            "SELECT * FROM team_emojis WHERE team_id = ?", (team_id,)
+        )
+        return await cur.fetchone()
+
+    async def put_team_emoji(
+        self,
+        team_id: int,
+        emoji_id: int,
+        emoji_name: str,
+        image_url: str | None,
+        animated: bool = False,
+    ) -> None:
+        await self.conn.execute(
+            """
+            INSERT INTO team_emojis
+                (team_id, emoji_id, emoji_name, image_url, animated, last_used_at)
+            VALUES (?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(team_id) DO UPDATE SET
+                emoji_id     = excluded.emoji_id,
+                emoji_name   = excluded.emoji_name,
+                image_url    = excluded.image_url,
+                animated     = excluded.animated,
+                last_used_at = datetime('now')
+            """,
+            (team_id, str(emoji_id), emoji_name, image_url, int(animated)),
+        )
+        await self.conn.commit()
+
+    async def touch_team_emoji(self, team_id: int) -> None:
+        """Mark an icon as recently used, so eviction takes the coldest first."""
+        await self.conn.execute(
+            "UPDATE team_emojis SET last_used_at = datetime('now') WHERE team_id = ?",
+            (team_id,),
+        )
+        await self.conn.commit()
+
+    async def drop_team_emoji(self, team_id: int) -> None:
+        await self.conn.execute("DELETE FROM team_emojis WHERE team_id = ?", (team_id,))
+        await self.conn.commit()
+
+    async def count_team_emojis(self) -> int:
+        cur = await self.conn.execute("SELECT COUNT(*) AS n FROM team_emojis")
+        row = await cur.fetchone()
+        return int(row["n"]) if row else 0
+
+    async def coldest_team_emojis(self, limit: int) -> list[aiosqlite.Row]:
+        cur = await self.conn.execute(
+            "SELECT * FROM team_emojis ORDER BY last_used_at ASC LIMIT ?", (limit,)
+        )
+        return list(await cur.fetchall())
+
     # ── per-guild game toggles ───────────────────────────────────────────────
     async def disabled_games(self, guild_id: int | None) -> set[str]:
         """Games this server has switched off. Empty for DMs / untouched guilds."""

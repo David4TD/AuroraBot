@@ -193,7 +193,10 @@ class TournamentSelect(discord.ui.Select):
             return
         await interaction.followup.send(
             embed=standings_embed(
-                label, standings, self._tournaments.get(self.values[0])
+                label,
+                standings,
+                self._tournaments.get(self.values[0]),
+                self.cog.bot.icons,
             )
         )
 

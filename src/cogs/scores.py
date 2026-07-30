@@ -105,7 +105,7 @@ class Scores(commands.Cog):
             )
             return
 
-        embeds = [match_embed(m, game_key) for m in matches[:SHOW]]
+        embeds = [match_embed(m, game_key, self.bot.icons) for m in matches[:SHOW]]
         await interaction.followup.send(
             content=f"🔴 **{len(matches)} live Tier 1 match(es)**", embeds=embeds
         )
@@ -134,7 +134,7 @@ class Scores(commands.Cog):
         if not matches:
             await interaction.followup.send(NO_TOP_TIER_MATCHES)
             return
-        embeds = [match_embed(m, game_key) for m in matches[:SHOW]]
+        embeds = [match_embed(m, game_key, self.bot.icons) for m in matches[:SHOW]]
         await interaction.followup.send(content="🗓️ **Upcoming · Tier 1**", embeds=embeds)
 
     @app_commands.command(
@@ -163,7 +163,7 @@ class Scores(commands.Cog):
         if not matches:
             await interaction.followup.send(NO_TOP_TIER_MATCHES)
             return
-        embeds = [match_embed(m, game_key) for m in matches[:SHOW]]
+        embeds = [match_embed(m, game_key, self.bot.icons) for m in matches[:SHOW]]
         await interaction.followup.send(content="✅ **Recent results · Tier 1**", embeds=embeds)
 
 

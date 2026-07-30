@@ -403,7 +403,7 @@ class Alerts(commands.Cog):
 
         try:
             message = await channel.send(
-                content=content, embed=match_embed(match, sub["game"])
+                content=content, embed=match_embed(match, sub["game"], self.bot.icons)
             )
         except discord.Forbidden:
             log.warning("Missing permission to post in channel %s", channel_id)

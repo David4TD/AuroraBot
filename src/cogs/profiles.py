@@ -11,6 +11,7 @@ from ..services.pandascore import PandaScoreError
 from ..utils.choices import GAME_CHOICES
 from ..utils.embeds import BRAND, GREEN, RED
 from ..utils.games import label_for, resolve_slug
+from ..utils.regions import team_flag
 
 log = logging.getLogger("aurorabot.cogs.profiles")
 
@@ -25,6 +26,7 @@ class FollowSelect(discord.ui.Select):
                 label=t.get("name", "Team")[:100],
                 value=str(t["id"]),
                 description=(t.get("location") or "")[:100] or None,
+                emoji=cog.bot.icons.partial(t) or team_flag(t),
             )
             for t in teams[:25]
         ]

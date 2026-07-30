@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 import discord
+
+if TYPE_CHECKING:  # pragma: no cover
+    from ..services.emojis import TeamIconStore
 
 from .games import REFERENCE_SITES, label_for
 from .regions import event_flag, event_region, team_flag
@@ -25,6 +29,14 @@ def _fmt_dt(value: str | None) -> str:
         return value
 
 
+def _opponent_dicts(match: dict) -> list[dict]:
+    """The raw team payloads, needed for logos (``image_url``) and flags."""
+    return [
+        (o.get("opponent") or {})
+        for o in (match.get("opponents") or [])[:2]
+    ]
+
+
 def _opponents(match: dict) -> tuple[str, str]:
     opps = match.get("opponents") or []
     names = []
@@ -43,32 +55,40 @@ def _score_line(match: dict) -> str:
     return "vs"
 
 
-def match_embed(match: dict, game_key: str | None = None) -> discord.Embed:
+def match_embed(
+    match: dict, game_key: str | None = None, icons: "TeamIconStore | None" = None
+) -> discord.Embed:
+    """Render a match.
+
+    Layout note: the matchup sits in the **description**, not the title,
+    because Discord does not render custom emoji (the team logos) in embed
+    titles — they leak as raw ``<:name:id>`` text, worst of all on mobile. The
+    title carries the state and the event, using only unicode emoji and the
+    region flag, which do render there.
+    """
     a, b = _opponents(match)
     state = (match.get("status") or "").lower()
     color = {"running": GREEN, "not_started": AMBER, "finished": BRAND}.get(state, BRAND)
 
-    if state == "running":
-        title = f"🔴 LIVE · {a} {_score_line(match)} {b}"
-    elif state == "finished":
-        title = f"✅ {a} {_score_line(match)} {b}"
-    else:
-        title = f"🕒 {a} vs {b}"
-
-    embed = discord.Embed(title=title, color=color)
     league = (match.get("league") or {}).get("name")
     serie = (match.get("serie") or {}).get("full_name")
     tournament = (match.get("tournament") or {}).get("name")
     context = " · ".join(x for x in [league, serie, tournament] if x)
-    if context:
-        # Region flag leads the event line so the circuit is recognisable at a
-        # glance (🇰🇷 LCK vs 🇪🇺 LEC) without reading the names.
-        flag = event_flag(match)
-        embed.add_field(
-            name="Event",
-            value=f"{flag} {context}" if flag else context,
-            inline=False,
-        )
+    flag = event_flag(match)
+
+    marker = {"running": "🔴 LIVE", "finished": "✅ Result"}.get(state, "🕒 Upcoming")
+    heading = " · ".join(x for x in [marker, f"{flag} {context}" if flag else context] if x)
+    embed = discord.Embed(title=heading[:256], color=color)
+
+    # Team logos render inline here. Without a cached icon this degrades to
+    # exactly the previous plain-text matchup.
+    team_a, team_b = (_opponent_dicts(match) + [{}, {}])[:2]
+    icon_a = icons.icon(team_a) if icons else ""
+    icon_b = icons.icon(team_b) if icons else ""
+    left = f"{icon_a} **{a}**".strip()
+    right = f"{icon_b} **{b}**".strip()
+    separator = _score_line(match) if state in {"running", "finished"} else "vs"
+    embed.description = f"{left}  {separator}  {right}"
 
     embed.add_field(name="Format", value=match.get("match_type", "—"), inline=True)
     embed.add_field(
@@ -98,18 +118,25 @@ def standings_embed(
     tournament_name: str,
     standings: list[dict],
     tournament: dict | None = None,
+    icons: "TeamIconStore | None" = None,
 ) -> discord.Embed:
     flag = event_flag(tournament) if tournament else None
     heading = f"{flag} {tournament_name}" if flag else tournament_name
     embed = discord.Embed(title=f"📊 Standings · {heading}", color=BRAND)
+
+    # Queue every logo up front so one pass of the worker covers the table.
+    teams = [(row.get("team") or {}) for row in standings[:20]]
+    if icons:
+        icons.warm(teams)
+
     lines = []
     for i, row in enumerate(standings[:20], start=1):
         team = row.get("team") or {}
         name = team.get("name", "—")
-        # Team flags come from PandaScore's own `location` field, unlike event
-        # flags which have to be derived from names.
-        tflag = team_flag(team)
-        label = f"{tflag} **{name}**" if tflag else f"**{name}**"
+        # Prefer the club's own logo; fall back to its country flag (from
+        # PandaScore's `location`) so a row is never bare while icons warm up.
+        badge = (icons.icon(team) if icons else "") or team_flag(team) or ""
+        label = f"{badge} **{name}**".strip()
         wins = row.get("wins", row.get("total_win", "—"))
         losses = row.get("losses", row.get("total_loss", "—"))
         rank = row.get("rank", i)
