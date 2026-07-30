@@ -62,6 +62,16 @@ class Settings:
     # (Worlds, TI, CS Majors), while regional leagues like LEC/LCK are A — so
     # the default spans both. See src/utils/tiers.py.
     tier_allowlist: frozenset[str] = DEFAULT_TOP_TIERS
+    # Daily schedule digest. The zone is named (not an offset) so local
+    # midnight survives daylight-saving changes.
+    digest_tz_name: str = "Australia/Sydney"
+    digest_hour: int = 0
+
+    @property
+    def digest_tz(self):
+        from .utils.schedule import load_zone
+
+        return load_zone(self.digest_tz_name)
 
     @property
     def data_dir(self) -> Path:
@@ -81,4 +91,6 @@ def load_settings() -> Settings:
         top_tier_only=_parse_bool(_get("TOP_TIER_ONLY", "true"), True),
         alert_lead_minutes=int(_get("ALERT_LEAD_MINUTES", "30") or 30),
         tier_allowlist=parse_tier_list(_get("TIERS", "s,a")),
+        digest_tz_name=_get("DIGEST_TZ", "Australia/Sydney") or "Australia/Sydney",
+        digest_hour=max(0, min(23, int(_get("DIGEST_HOUR", "0") or 0))),
     )

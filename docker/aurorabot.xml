@@ -118,6 +118,26 @@
           Required="false"
           Mask="false"/>
 
+  <Config Name="Digest Timezone"
+          Target="DIGEST_TZ"
+          Default="Australia/Sydney"
+          Mode=""
+          Description="Timezone the daily schedule digest treats as 'today'. Any IANA zone name (e.g. Europe/London, America/New_York). A named zone keeps local midnight correct across daylight saving."
+          Type="Variable"
+          Display="advanced"
+          Required="false"
+          Mask="false"/>
+
+  <Config Name="Digest Hour"
+          Target="DIGEST_HOUR"
+          Default="0"
+          Mode=""
+          Description="Local hour to post the daily schedule (0 = midnight)."
+          Type="Variable"
+          Display="advanced"
+          Required="false"
+          Mask="false"/>
+
   <Config Name="Log Level"
           Target="LOG_LEVEL"
           Default="INFO"

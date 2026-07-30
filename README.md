@@ -27,6 +27,7 @@ on **Unraid** via Docker.
 | **Predictions** | `/predict`, `/mypredictions` — earn points for correct calls |
 | **Leaderboard** | `/leaderboard` — top predictors in your server |
 | **Alerts** | `/alerts add`, `/alerts list`, `/alerts remove` — by team, by tournament, or a whole game |
+| **Schedule** | daily digest of a tournament's matches + `/schedule` to post now |
 | **Games** | `/games` — toggle which titles this server follows |
 | **Meta** | `/help`, `/ping` |
 
@@ -179,6 +180,52 @@ titles added to the catalogue later default to on.
 Settings are per Discord server; running the bot in several servers gives each
 its own list.
 
+### 📅 Daily schedule digest
+
+Every channel subscribed to a **tournament** gets one message at local midnight
+listing that tournament's matches for the day, with a dropdown for predicting
+winners:
+
+```
+📅 Today · 🇰🇷 LCK Summer 2026
+ <t:…:t> · 🇰🇷 T1  vs  🇰🇷 Gen.G
+ <t:…:t> · 🇰🇷 HLE vs  🇰🇷 Dplus KIA
+ [ Pick a match to predict…    ▾ ]
+```
+
+Picking a match replies **ephemerally** with two team buttons, so voting never
+clutters the channel. Times render as Discord timestamps, so each viewer sees
+them in their own zone.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DIGEST_TZ` | `Australia/Sydney` | Zone the "day" is measured in |
+| `DIGEST_HOUR` | `0` | Local hour to post (0 = midnight) |
+
+Details that matter:
+
+- **The zone is a name, not an offset**, so local midnight stays correct across
+  daylight saving — a `+10:00` offset would drift by an hour twice a year. Day
+  windows are built by adding 24h to local midnight, which correctly yields the
+  23- and 25-hour days at each DST switch.
+- **The sweep runs every 5 minutes, not once at midnight.** A bot that was
+  offline at 00:00 still posts when it comes back, instead of skipping the day.
+- **A day is claimed before it is posted.** `match_digests` is UNIQUE on
+  (channel, subscription, local date), so neither the catch-up sweep nor a
+  restart can double-post. A crash between claim and post costs one digest
+  rather than risking duplicates every five minutes.
+- **Nothing scheduled still claims the day**, so the API isn't re-queried every
+  5 minutes for a tournament that's idle — and you don't get a "today's
+  schedule" post arriving at 6pm.
+- **The dropdown survives restarts.** It's a `DynamicItem` routed by its
+  `custom_id`, with the day's matches re-read from `digest_matches`, so no
+  per-message view has to be re-registered.
+- Matches without both teams confirmed (empty bracket slots) are skipped —
+  there's nothing to vote on. Capped at 25, Discord's select limit.
+
+`/schedule` (Manage Server) posts the current day's digest immediately, which is
+handy for checking the layout without waiting for midnight.
+
 ### 🔔 Alerts, reminders & reaction predictions
 
 `/alerts add` subscribes the current channel, scoped three ways:
@@ -233,11 +280,13 @@ aurorabot/
 │   ├── cogs/                  # one module per feature area
 │   │   ├── meta.py  scores.py  standings.py  analytics.py
 │   │   ├── profiles.py  predictions.py  leaderboard.py  alerts.py
-│   │   └── games.py           # /games toggle panel
+│   │   ├── games.py           # /games toggle panel
+│   │   └── digest.py          # daily schedule digest + voting
 │   └── utils/
 │       ├── games.py           # game ↔ PandaScore slug mapping
 │       ├── guildgames.py      # enforcement of the per-server toggles
 │       ├── regions.py         # region flags for leagues/events/teams
+│       ├── schedule.py        # local-calendar / DST-safe day windows
 │       ├── tiers.py           # Tier 1 (S/A grade) filtering
 │       ├── tournaments.py     # "is this tournament current?" + labels
 │       ├── matches.py         # opponent / tournament readers for payloads
@@ -397,6 +446,8 @@ Because the database lives on the mounted volume, updates never lose data.
 | `ALERT_LEAD_MINUTES` | | `30` | Minutes before kick-off to post the reminder |
 | `TOP_TIER_ONLY` | | `true` | Restrict everything to top-tier tournaments |
 | `TIERS` | | `s,a` | PandaScore tier grades counting as Tier 1 (see above) |
+| `DIGEST_TZ` | | `Australia/Sydney` | Zone for the daily schedule digest |
+| `DIGEST_HOUR` | | `0` | Local hour the digest posts (0 = midnight) |
 | `HEALTH_PORT` | | `8080` | Internal health server port |
 | `LOG_LEVEL` | | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
 | `PANDASCORE_CS_SLUG` | | `cs-go` | PandaScore videogame slug for Counter-Strike |
@@ -409,7 +460,8 @@ SQLite via `aiosqlite`, chosen so a single Unraid container needs no separate
 database service. The schema (`src/database/schema.sql`) is applied idempotently
 on every startup — safe across restarts and updates. Tables: `users`,
 `followed_teams`, `guild_games`, `team_emojis`, `alert_subscriptions`,
-`alerted_matches`, `alert_messages`, `predictions`.
+`alerted_matches`, `alert_messages`, `match_digests`, `digest_matches`,
+`predictions`.
 
 Column changes are handled by `Database._migrate()`, which runs before the
 schema script and is guarded by `PRAGMA table_info` checks. Upgrading from an

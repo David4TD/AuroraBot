@@ -11,10 +11,13 @@ So event flags are derived here, in three passes, stopping at the first hit:
 1. :data:`LEAGUE_REGIONS` — an exact match on the league name. Because
    AuroraBot only surfaces Tier 1 (S/A) events, this set is small and changes
    about once a season, so hard-coding it is accurate and free.
-2. :data:`_KEYWORD_REGIONS` — a substring scan for region words ("EMEA",
+2. The same table matched *inside* a longer label, since tournament names look
+   like "LCK Summer 2026 · Playoffs". Single-word keys must match a whole token
+   so short acronyms can't fire on unrelated words.
+3. :data:`_KEYWORD_REGIONS` — a substring scan for region words ("EMEA",
    "Pacific", "Korea"). Catches leagues missing from the table above, and new
    ones that follow the usual naming.
-3. Nothing. No flag is shown rather than a wrong one.
+4. Nothing. No flag is shown rather than a wrong one.
 
 Adding a league is a one-line edit to :data:`LEAGUE_REGIONS`.
 """
@@ -221,7 +224,17 @@ def region_token(*names: str | None) -> str | None:
         if name in LEAGUE_REGIONS:
             return LEAGUE_REGIONS[name]
 
-    for name in cleaned:                      # pass 2: keyword scan
+    # Pass 2: a league acronym inside a longer label. Tournament names arrive as
+    # "LCK Summer 2026 · Playoffs", so the exact match above misses them.
+    # Multi-word keys are checked as substrings; single words must match a whole
+    # token, so "lta" can't fire on "atlanta".
+    for name in cleaned:
+        tokens = {t.strip("·,()[]") for t in name.split()}
+        for key, token in LEAGUE_REGIONS.items():
+            if (" " in key and key in name) or (" " not in key and key in tokens):
+                return token
+
+    for name in cleaned:                      # pass 3: keyword scan
         for keyword, token in _KEYWORD_REGIONS:
             if keyword in name:
                 return token

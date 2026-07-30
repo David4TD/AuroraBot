@@ -406,6 +406,113 @@ class Database:
         await self.conn.commit()
         return removed
 
+    # ── daily schedule digests ───────────────────────────────────────────────
+    async def digest_for(
+        self, channel_id: int, subscription_id: int, local_date: str
+    ) -> aiosqlite.Row | None:
+        cur = await self.conn.execute(
+            "SELECT * FROM match_digests "
+            "WHERE channel_id = ? AND subscription_id = ? AND local_date = ?",
+            (str(channel_id), subscription_id, local_date),
+        )
+        return await cur.fetchone()
+
+    async def create_digest(
+        self,
+        guild_id: int | None,
+        channel_id: int,
+        subscription_id: int,
+        tournament_id: int | None,
+        tournament_name: str | None,
+        game: str | None,
+        local_date: str,
+    ) -> int | None:
+        """Claim today's digest slot. ``None`` means another pass already has it.
+
+        Claiming *before* posting means a crash between claim and post costs one
+        missed digest rather than risking a duplicate every five minutes.
+        """
+        try:
+            cur = await self.conn.execute(
+                """
+                INSERT INTO match_digests
+                    (guild_id, channel_id, subscription_id, tournament_id,
+                     tournament_name, game, local_date)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(guild_id) if guild_id else None,
+                    str(channel_id),
+                    subscription_id,
+                    tournament_id,
+                    tournament_name,
+                    game,
+                    local_date,
+                ),
+            )
+            await self.conn.commit()
+            return cur.lastrowid
+        except aiosqlite.IntegrityError:
+            return None
+
+    async def set_digest_message(self, digest_id: int, message_id: int) -> None:
+        await self.conn.execute(
+            "UPDATE match_digests SET message_id = ? WHERE id = ?",
+            (str(message_id), digest_id),
+        )
+        await self.conn.commit()
+
+    async def add_digest_matches(self, digest_id: int, matches: list[dict]) -> None:
+        await self.conn.executemany(
+            """
+            INSERT OR REPLACE INTO digest_matches
+                (digest_id, match_id, begin_at,
+                 team_a_id, team_a_name, team_b_id, team_b_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    digest_id,
+                    m["match_id"],
+                    m.get("begin_at"),
+                    m["team_a"][0],
+                    m["team_a"][1],
+                    m["team_b"][0],
+                    m["team_b"][1],
+                )
+                for m in matches
+            ],
+        )
+        await self.conn.commit()
+
+    async def digest_match(self, digest_id: int, match_id: int) -> aiosqlite.Row | None:
+        cur = await self.conn.execute(
+            "SELECT * FROM digest_matches WHERE digest_id = ? AND match_id = ?",
+            (digest_id, match_id),
+        )
+        return await cur.fetchone()
+
+    async def digest_meta(self, digest_id: int) -> aiosqlite.Row | None:
+        cur = await self.conn.execute(
+            "SELECT * FROM match_digests WHERE id = ?", (digest_id,)
+        )
+        return await cur.fetchone()
+
+    async def prune_digests(self, days: int = 14) -> int:
+        cur = await self.conn.execute(
+            "DELETE FROM match_digests WHERE created_at < datetime('now', ?)",
+            (f"-{days} days",),
+        )
+        removed = cur.rowcount
+        # digest_matches has ON DELETE CASCADE, but only fires with the pragma
+        # on — clear orphans explicitly so pruning is reliable either way.
+        await self.conn.execute(
+            "DELETE FROM digest_matches WHERE digest_id NOT IN "
+            "(SELECT id FROM match_digests)"
+        )
+        await self.conn.commit()
+        return removed
+
     # ── predictions ──────────────────────────────────────────────────────────
     async def create_prediction(
         self,

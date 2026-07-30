@@ -32,6 +32,7 @@ COGS = [
     "src.cogs.predictions",
     "src.cogs.leaderboard",
     "src.cogs.alerts",
+    "src.cogs.digest",
 ]
 
 
@@ -81,6 +82,13 @@ class AuroraBot(commands.Bot):
         for ext in COGS:
             await self.load_extension(ext)
             self.log.info("Loaded %s", ext)
+
+        # Route interactions from digest dropdowns posted by earlier runs. The
+        # item rebuilds itself from its custom_id, so no per-message view has to
+        # be re-registered.
+        from .cogs.digest import DigestSelect
+
+        self.add_dynamic_items(DigestSelect)
 
         # Command sync: instant per-guild in dev, global otherwise.
         #

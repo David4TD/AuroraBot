@@ -105,6 +105,39 @@ CREATE TABLE IF NOT EXISTS alert_messages (
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- ─── Daily schedule digests ─────────────────────────────────────────────────
+-- One row per (channel, subscription, local date). The UNIQUE key is what stops
+-- a restart — or the 5-minute catch-up sweep — from re-posting a day's schedule.
+-- A row with message_id NULL records "checked, nothing on today", so we stop
+-- re-querying the API for the rest of that day.
+CREATE TABLE IF NOT EXISTS match_digests (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id        TEXT,
+    channel_id      TEXT NOT NULL,
+    subscription_id INTEGER NOT NULL,
+    tournament_id   INTEGER,
+    tournament_name TEXT,
+    game            TEXT,
+    local_date      TEXT NOT NULL,          -- YYYY-MM-DD in DIGEST_TZ
+    message_id      TEXT,                   -- NULL = nothing scheduled that day
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (channel_id, subscription_id, local_date)
+);
+
+-- The matches a digest listed, so its dropdown can resolve a pick back to two
+-- teams after a restart without re-hitting the API.
+CREATE TABLE IF NOT EXISTS digest_matches (
+    digest_id   INTEGER NOT NULL,
+    match_id    INTEGER NOT NULL,
+    begin_at    TEXT,
+    team_a_id   INTEGER NOT NULL,
+    team_a_name TEXT NOT NULL,
+    team_b_id   INTEGER NOT NULL,
+    team_b_name TEXT NOT NULL,
+    PRIMARY KEY (digest_id, match_id),
+    FOREIGN KEY (digest_id) REFERENCES match_digests(id) ON DELETE CASCADE
+);
+
 -- ─── Predictions ────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS predictions (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -131,3 +164,4 @@ CREATE INDEX IF NOT EXISTS idx_alerted_at          ON alerted_matches(alerted_at
 CREATE INDEX IF NOT EXISTS idx_alertmsg_created    ON alert_messages(created_at);
 CREATE INDEX IF NOT EXISTS idx_guildgames_disabled ON guild_games(guild_id) WHERE enabled = 0;
 CREATE INDEX IF NOT EXISTS idx_teamemoji_lru       ON team_emojis(last_used_at);
+CREATE INDEX IF NOT EXISTS idx_digest_date         ON match_digests(local_date);
