@@ -64,9 +64,11 @@ CREATE TABLE IF NOT EXISTS alert_subscriptions (
     guild_id        TEXT NOT NULL,
     channel_id      TEXT NOT NULL,
     game            TEXT NOT NULL,
-    scope           TEXT NOT NULL DEFAULT 'game',  -- game | team | tournament
+    scope           TEXT NOT NULL DEFAULT 'game',  -- game | team | league | tournament
     team_id         INTEGER,              -- set when scope = 'team'
     team_name       TEXT,
+    league_id       INTEGER,              -- set when scope = 'league'
+    league_name     TEXT,
     tournament_id   INTEGER,              -- set when scope = 'tournament'
     tournament_name TEXT,
     created_by      TEXT,
@@ -76,7 +78,8 @@ CREATE TABLE IF NOT EXISTS alert_subscriptions (
 -- IFNULL() in the index keeps whole-game subscriptions unique too: a plain
 -- UNIQUE constraint would treat every NULL team_id as distinct.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_alertsub_unique
-    ON alert_subscriptions (channel_id, game, IFNULL(team_id, 0), IFNULL(tournament_id, 0));
+    ON alert_subscriptions (channel_id, game, IFNULL(team_id, 0),
+                            IFNULL(league_id, 0), IFNULL(tournament_id, 0));
 
 -- Tracks which match/state combos we've already announced so we don't repeat.
 -- 'reminder' is the pre-match ping, 'live' fires when the match goes live.

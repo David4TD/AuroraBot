@@ -1,508 +1,253 @@
 # 🌌 AuroraBot
 
-A production-ready **Discord bot for eSports fans**. Follow live scores,
-standings, deep team analytics and real-time match alerts — and challenge your
-friends with match predictions and a server leaderboard.
-
-Everything AuroraBot surfaces is limited to **Tier 1** tournaments, so your
+A Discord bot for eSports fans: live scores, standings, team analytics, match
+alerts and a prediction leaderboard — limited to **Tier 1** tournaments so your
 channels stay signal, not noise.
 
 Covers **League of Legends, Counter-Strike 2, Valorant, Dota 2, Rocket League,
-Rainbow Six, Call of Duty, Overwatch, PUBG, Mobile Legends** and more, powered
-by the [PandaScore API](https://pandascore.co).
+Rainbow Six, Call of Duty, Overwatch, PUBG, Mobile Legends** and more, powered by
+the [PandaScore API](https://pandascore.co).
 
-Built with **discord.py 2.x** and fully containerised for one-click deployment
-on **Unraid** via Docker.
+Built with **discord.py 2.x**, containerised for one-click **Unraid** deployment.
 
 ---
 
-## ✨ Features
+## ✨ Commands
 
 | Area | Commands |
 |------|----------|
-| **Live scores** | `/live`, `/upcoming`, `/results` (optionally filtered by game) |
-| **Standings** | `/standings <league>` — picker of that league's **current** splits |
-| **Analytics** | `/team <name>` — recent form, win rate, roster, deep-stats links |
-| **Profiles** | `/profile`, `/follow`, `/unfollow`, `/setgame` |
-| **Predictions** | `/predict`, `/mypredictions` — earn points for correct calls |
-| **Leaderboard** | `/leaderboard` — top predictors in your server |
-| **Alerts** | `/alerts add`, `/alerts list`, `/alerts remove` — by team, by tournament, or a whole game |
-| **Schedule** | daily digest of a tournament's matches + `/schedule` to post now |
-| **Games** | `/games` — toggle which titles this server follows |
+| **Live scores** | `/live`, `/upcoming`, `/results` |
+| **Standings** | `/standings <league>` — current splits only |
+| **Analytics** | `/team <name>` — form, win rate, roster, deep-stats links |
+| **Profile** | `/profile`, `/follow`, `/unfollow`, `/setgame` |
+| **Predictions** | `/predict`, `/mypredictions`, `/leaderboard` |
+| **Alerts** | `/alerts add`, `/alerts list`, `/alerts remove` |
+| **Schedule** | `/schedule` — post today's matches now |
+| **Games** | `/games` — pick which titles this server follows |
 | **Meta** | `/help`, `/ping` |
 
-Predictions resolve automatically: a background task checks finished matches
-every 5 minutes and awards points. Alerts poll PandaScore on a configurable
-interval (default 60s).
+---
 
-### 🏆 Tier 1 only
+## 🔔 Alerts
 
-Scores, alerts, predictions, standings and team form all pass through a tier
-filter. Unknown/ungraded tiers are excluded rather than let through, so the feed
-never quietly fills up with third-tier qualifiers.
+`/alerts add` subscribes the current channel. Scope it four ways:
 
-**PandaScore's tier scale is narrower than the scene's.** They grade
-`S > A > B > C > D > unranked`, and reserve `S` for the majors — so filtering on
-`S` alone would drop every regional league:
+```
+/alerts add game:LoL                        every Tier 1 LoL match
+/alerts add game:LoL team:G2 Esports        one team
+/alerts add game:LoL tournament:LCK         a whole league, all stages
+/alerts add game:LoL tournament:LCK · …     one specific stage
+```
+
+The `tournament` field autocompletes. **Whole leagues are listed first**, because
+a league's stages are separate tournaments that often run in parallel — LCK
+splits into a Legend Group and a Rise Group — so picking one stage would miss the
+other. Pick `LCK` to follow everything, or a `↳` entry for a single stage.
+
+Each subscribed match produces two pings: a **reminder** 30 minutes before
+kick-off (`ALERT_LEAD_MINUTES`) and a **live** alert at kick-off. React 1️⃣ / 2️⃣
+on the reminder to predict a winner — you can switch until kick-off, then it
+locks. Confirmation arrives by DM.
+
+## 📅 Daily schedule
+
+League and tournament subscriptions also get one message at local midnight
+listing the day's matches, with a dropdown for predicting winners. Picking a
+match replies privately, so voting doesn't clutter the channel.
+
+`/schedule` posts the current day immediately. Both need *Manage Server*.
+
+## 🎮 Per-server games
+
+`/games` shows which titles this server follows; members with *Manage Server*
+get a multi-select to change it. Muting a game removes it from the unfiltered
+feeds and silences its alerts. Asking for it explicitly still answers, saying
+it's muted. Existing subscriptions are kept and resume when you re-enable it.
+
+## 🏆 What "Tier 1" means
+
+PandaScore grades tournaments `S > A > B > C > D`, and reserves `S` for the
+majors — so **filtering on `S` alone drops every regional league**:
 
 | Grade | Examples |
 |-------|----------|
 | `S` | Worlds, MSI, The International, CS Majors / IEM / BLAST, VCT Masters |
-| `A` | **LEC, LCK, LCS, LPL**, VCT EMEA / NA, ESL Pro League, DPC Division 1 |
-| `B`–`D` | Regional qualifiers, academy and development circuits |
+| `A` | **LEC, LCK, LCS, LPL**, VCT EMEA / NA, ESL Pro League |
+| `B`–`D` | Qualifiers, academy and development circuits |
 
-"Tier 1" in the sense fans mean it is therefore **S + A**, which is the default
-(`TIERS=s,a`). Narrow it to majors only with `TIERS=s`, widen it with
-`TIERS=s,a,b`, or turn the filter off entirely with `TOP_TIER_ONLY=false`.
+The default is therefore `TIERS=s,a`. Use `TIERS=s` for majors only, `s,a,b` to
+widen, or `TOP_TIER_ONLY=false` to disable filtering.
 
-Tier lives on the *tournament* object only — not on series or leagues — and
-PandaScore exposes no server-side tier filter on the match endpoints, so
-AuroraBot over-fetches and filters client-side in `src/utils/tiers.py`.
+If a feed looks empty, that's usually the filter working — `/standings` names
+what it filtered out and at what grade.
 
-> Sources: [Tournaments in-depth](https://developers.pandascore.co/docs/tournaments-in-depth)
+## 🏳️ Flags and logos
 
-### 🏳️ Team logos (inline icons)
+Teams show their crest inline (uploaded once as an application emoji) and events
+show a region flag — 🇰🇷 LCK, 🇪🇺 LEC, 🌏 VCT Pacific, 🌍 Worlds.
 
-Team logos appear **inline** — in the match line, standings rows, the winner
-buttons on `/predict`, and the `/follow` picker.
+Icons **warm up**: the first view of a new league is mostly plain and fills in
+over a few seconds. That's expected, not a fault — rendering never waits on the
+network. Anything that fails falls back to plain text.
 
-Discord only renders an image inside text if it is a **custom emoji**, so each
-team's `image_url` is uploaded once as an *application emoji* (owned by the bot,
-usable in every server, 2000 cap) and referenced by id thereafter. This needs
-**discord.py ≥ 2.5**, hence the 2.7.1 pin.
-
-How it behaves, by design:
-
-- **Rendering never waits on the network.** A cache miss returns nothing and
-  queues the team; a background worker mints the emoji, so the *next* render
-  shows it. The first `/standings` for a new league is therefore mostly
-  flagless and fills in within seconds — it is warming, not broken.
-- **Uploads are throttled** (15/minute) because one command can reference 25
-  unknown teams. A `429` pauses minting for five minutes.
-- **The cap is respected.** Nearing 2000, least-recently-used icons are deleted
-  so long-tail teams don't squat.
-- **Logos are downloaded whole.** `StreamReader.read(n)` reads *up to* n bytes
-  and returns as soon as anything is available, so it yielded only the first
-  ~16 KB — a truncated PNG that Discord then refused with `50046 Invalid
-  Asset`. Logos under one chunk arrived intact and worked, which made it look
-  convincingly like a size limit; it never was. The body is now accumulated via
-  `iter_chunked`, and a length mismatch against `Content-Length` is treated as a
-  failed transfer rather than uploaded.
-- **Every logo is re-encoded before upload.** Pillow renders each one as a
-  square 128px PNG, stepping down through 96/64/48px with palette quantization
-  if needed to stay small. Wide wordmarks are padded onto a transparent square
-  rather than stretched. Real logos land at 1.3–11.5 KB from 4.9–89 KB sources.
-- **Emojis outlive the database.** They belong to the *application*, not to
-  appdata, so a recreated volume leaves them orphaned. Startup indexes owned
-  emojis by name and minting adopts a match instead of creating a duplicate
-  (`50035`). When a team rebrands, the old emoji is deleted *before* the
-  replacement is created, since names must be unique and there is no endpoint
-  to swap an emoji's image.
-- **Failure is invisible, and remembered.** A dead URL, an SVG or a revoked
-  permission leaves plain text, and the standings table falls back to the
-  team's country flag. After two failed attempts a team is given up on, so a
-  logo Discord refuses can't be re-queued by every render.
-- **Restarts are free.** The `team_emojis` table maps team → emoji, and startup
-  reconciles it against the emojis actually owned, dropping stale rows.
-- **Blobs are cached on the appdata volume.** Normalised PNGs land in
-  `/appdata/logos/` (`/mnt/user/appdata/aurorabot/logos` on Unraid) as
-  `{team_id}-{url hash}.png`. A logo is fetched from PandaScore once and never
-  again — the `team_emojis` row short-circuits every render, and if an emoji ever
-  has to be re-created (LRU eviction, a manual deletion in the developer portal,
-  a database restored without its emojis) the bytes come off disk instead of the
-  CDN. Writes are atomic, unreadable files are treated as misses so a partial
-  write self-heals, superseded versions are pruned on rebrand, and an
-  unwritable directory just disables the cache. Budget roughly 10 KB per team.
-
-> Emoji names are `{team}_{id}` (e.g. `t1_11`), so the list stays readable in
-> the Discord developer portal.
-
-**Layout note:** the matchup sits in the embed **description**, not the title.
-Discord does not render custom emoji in embed titles — they leak as raw
-`<:name:id>`, worst of all on mobile. The title carries the state and event,
-which is why region flags (plain unicode) work there but logos don't.
-
-### 🌍 Region flags
-
-Events, tournaments and teams carry a region flag — 🇰🇷 LCK, 🇪🇺 LEC, 🇨🇳 LPL,
-🌏 VCT Pacific, 🌍 Worlds — in match embeds, the standings title and table, the
-league and split pickers, the `/alerts add` autocomplete and the `/predict`
-match list.
-
-**Teams** use PandaScore's own `location` field (an ISO-3166 alpha-2 code),
-converted arithmetically to a flag, so any country works.
-
-**Events don't**: PandaScore exposes *no* region or country field on leagues or
-tournaments (v2.53 — League is id/name/slug/url/image_url/series/videogame;
-Tournament adds tier, dates and rosters). So `src/utils/regions.py` derives it
-in three passes:
-
-1. an exact match on the league name in `LEAGUE_REGIONS` — accurate, and small
-   because only Tier 1 events are ever shown;
-2. a keyword scan for region words ("EMEA", "Pacific", "Korea", "Major"),
-   catching leagues absent from the table;
-3. no flag, rather than a wrong one.
-
-Multi-country regions use a symbol instead of pretending to be one nation:
-🇪🇺 EMEA, 🌎 Americas, 🌏 Asia-Pacific, 🌍 International.
-
-**Adding or fixing a league is a one-line edit** to `LEAGUE_REGIONS` in
-`src/utils/regions.py`:
+PandaScore exposes no region field, so event flags come from a table in
+`src/utils/regions.py`. Fixing or adding a league is a one-line edit:
 
 ```python
 "lck": "kr",
-"vct pacific": "pacific",
 ```
 
-### 🎮 Per-server game toggles
-
-`/games` shows which of the ten titles this server follows. Anyone can look;
-members with **Manage Server** also get a multi-select — everything selected is
-followed, everything cleared is muted, applied in one go. A **Follow all games**
-button undoes the lot.
-
-Muting a game:
-
-- removes it from the unfiltered `/live`, `/upcoming` and `/results`, and
-- silences the alert poll for it, so muted games can't ping the server (and
-  cost no API call).
-
-Asking for it explicitly still works — `/live game:Dota 2` on a server that
-muted Dota replies "**Dota 2** is muted on this server" rather than pretending
-there's nothing on. The toggle curates the firehose; it doesn't hide the
-catalogue.
-
-Existing `/alerts` subscriptions for a muted game are **kept, not deleted** —
-they simply go quiet, and resume if you switch the game back on. Only muted
-games are stored, so a server that never runs `/games` follows everything, and
-titles added to the catalogue later default to on.
-
-Settings are per Discord server; running the bot in several servers gives each
-its own list.
-
-### 📅 Daily schedule digest
-
-Every channel subscribed to a **tournament** gets one message at local midnight
-listing that tournament's matches for the day, with a dropdown for predicting
-winners:
-
-```
-📅 Today · 🇰🇷 LCK Summer 2026
- <t:…:t> · 🇰🇷 T1  vs  🇰🇷 Gen.G
- <t:…:t> · 🇰🇷 HLE vs  🇰🇷 Dplus KIA
- [ Pick a match to predict…    ▾ ]
-```
-
-Picking a match replies **ephemerally** with two team buttons, so voting never
-clutters the channel. Times render as Discord timestamps, so each viewer sees
-them in their own zone.
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `DIGEST_TZ` | `Australia/Sydney` | Zone the "day" is measured in |
-| `DIGEST_HOUR` | `0` | Local hour to post (0 = midnight) |
-
-Details that matter:
-
-- **The zone is a name, not an offset**, so local midnight stays correct across
-  daylight saving — a `+10:00` offset would drift by an hour twice a year. Day
-  windows are built by adding 24h to local midnight, which correctly yields the
-  23- and 25-hour days at each DST switch.
-- **The sweep runs every 5 minutes, not once at midnight.** A bot that was
-  offline at 00:00 still posts when it comes back, instead of skipping the day.
-- **A day is claimed before it is posted.** `match_digests` is UNIQUE on
-  (channel, subscription, local date), so neither the catch-up sweep nor a
-  restart can double-post. A crash between claim and post costs one digest
-  rather than risking duplicates every five minutes.
-- **Nothing scheduled still claims the day**, so the API isn't re-queried every
-  5 minutes for a tournament that's idle — and you don't get a "today's
-  schedule" post arriving at 6pm.
-- **The dropdown survives restarts.** It's a `DynamicItem` routed by its
-  `custom_id`, with the day's matches re-read from `digest_matches`, so no
-  per-message view has to be re-registered.
-- Matches without both teams confirmed (empty bracket slots) are skipped —
-  there's nothing to vote on. Capped at 25, Discord's select limit.
-
-`/schedule` (Manage Server) posts the current day's digest immediately, which is
-handy for checking the layout without waiting for midnight.
-
-### 🔔 Alerts, reminders & reaction predictions
-
-`/alerts add` subscribes the current channel, scoped three ways:
-
-| Command | Alerts on |
-|---------|-----------|
-| `/alerts add game:Valorant team:Sentinels` | every Sentinels match in that game |
-| `/alerts add game:LoL tournament:…` | one tournament (autocompletes to **current** Tier 1 events) |
-| `/alerts add game:CS2` | every Tier 1 CS2 match |
-
-Each subscribed match produces **two** pings:
-
-1. a **reminder** `ALERT_LEAD_MINUTES` before kick-off (default **30 min**), and
-2. a **live** alert the moment the match starts.
-
-The reminder carries 1️⃣ / 2️⃣ reactions — react to predict that team as the
-winner, no slash command needed. You can swap your pick right up until kick-off;
-once the match starts the pick locks and AuroraBot confirms by DM (falling back
-to a self-deleting channel message if your DMs are closed). Reactions are
-handled as raw gateway events, so they keep working on alerts posted before the
-last bot restart.
-
-Each (match, state, channel) is announced at most once, so restarts mid-window
-never double-post.
-
-### Deep-stats sources
-The analytics embeds link out to the community stat sites you rely on:
-
-- **League of Legends** → [gol.gg](https://gol.gg) (RFT-style deep stats)
-- **Valorant** → [vlr.gg](https://vlr.gg)
-- **Counter-Strike 2** → [hltv.org](https://hltv.org)
-
-> Core match/team/standings data comes from PandaScore's unified API; these
-> links are provided for fans who want to dive deeper on those sites.
-
----
-
-## 📁 Project structure
-
-```
-aurorabot/
-├── src/
-│   ├── bot.py                 # entrypoint: wires config, DB, API, cogs, health
-│   ├── config.py              # env-driven settings
-│   ├── database/
-│   │   ├── db.py              # aiosqlite data-access layer
-│   │   └── schema.sql         # idempotent schema (runs on startup)
-│   ├── services/
-│   │   ├── pandascore.py      # async PandaScore API client
-│   │   ├── emojis.py          # team logo → application emoji cache
-│   │   └── health.py          # lightweight aiohttp /health server
-│   ├── cogs/                  # one module per feature area
-│   │   ├── meta.py  scores.py  standings.py  analytics.py
-│   │   ├── profiles.py  predictions.py  leaderboard.py  alerts.py
-│   │   ├── games.py           # /games toggle panel
-│   │   └── digest.py          # daily schedule digest + voting
-│   └── utils/
-│       ├── games.py           # game ↔ PandaScore slug mapping
-│       ├── guildgames.py      # enforcement of the per-server toggles
-│       ├── regions.py         # region flags for leagues/events/teams
-│       ├── schedule.py        # local-calendar / DST-safe day windows
-│       ├── tiers.py           # Tier 1 (S/A grade) filtering
-│       ├── tournaments.py     # "is this tournament current?" + labels
-│       ├── matches.py         # opponent / tournament readers for payloads
-│       ├── predictions.py     # shared stake, reward and lock-in rules
-│       ├── embeds.py          # Discord embed builders
-│       └── choices.py         # slash-command choice lists
-├── docker/
-│   ├── Dockerfile             # multi-stage, non-root, healthcheck
-│   ├── docker-compose.yml     # bot service + appdata volume
-│   ├── healthcheck.py         # stdlib-only container healthcheck
-│   ├── aurorabot.xml          # Unraid Community Applications template
-│   ├── icon.png               # container icon used by the template
-│   └── make_icon.py           # regenerates icon.png (stdlib only)
-├── .github/workflows/
-│   └── docker-publish.yml     # build + push image to GHCR
-├── requirements.txt
-├── .env.example
-├── LICENSE
-└── README.md
-```
-
-### 🎨 Regenerating the icon
-
-`docker/icon.png` is committed, but it's generated rather than hand-drawn — no
-Pillow or design tool required:
-
-```bash
-python docker/make_icon.py --size 256
-```
-
-The Unraid template points `<Icon>` at
-`https://raw.githubusercontent.com/YOUR_GITHUB_USER/aurorabot/main/docker/icon.png`,
-so the icon appears in the Docker tab once the repo is public.
+### Deep-stats links
+Analytics embeds link out to [gol.gg](https://gol.gg) (LoL),
+[vlr.gg](https://vlr.gg) (Valorant) and [hltv.org](https://hltv.org) (CS2).
 
 ---
 
 ## 🔑 Prerequisites
 
-1. **Discord bot token** — create an application at the
-   [Discord Developer Portal](https://discord.com/developers/applications),
-   add a **Bot**, and copy its token. Under **Bot → Privileged Gateway
-   Intents**, no privileged intents are required (AuroraBot is slash-command
-   only). Invite it with the `applications.commands` and `bot` scopes and the
-   *Send Messages* / *Embed Links* permissions.
-2. **PandaScore API key** — sign up at [pandascore.co](https://pandascore.co)
-   and grab your key from the dashboard.
-
----
+1. **Discord bot token** — [Developer Portal](https://discord.com/developers/applications)
+   → your app → Bot. No privileged intents needed. Invite with the
+   `applications.commands` and `bot` scopes, plus *Send Messages*, *Embed Links*
+   and *Add Reactions*.
+2. **PandaScore API key** — from the [pandascore.co](https://pandascore.co) dashboard.
 
 ## 💻 Local development
 
 ```bash
-git clone https://github.com/YOUR_GITHUB_USER/aurorabot.git
-cd aurorabot
-
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-
-cp .env.example .env        # then edit .env with your token + API key
-# Tip: set DEV_GUILD_IDS to your test server ID for instant command sync.
-
+cp .env.example .env        # add your token + API key
 python -m src.bot
 ```
 
-The bot logs in, syncs its slash commands and starts the health server on
-`http://localhost:8080/health`.
+Set `DEV_GUILD_IDS` to your test server for instant command sync. Health server
+runs on `http://localhost:8080/health`.
 
----
-1. In Unraid Docker:
-   - Pull ghcr.io/david4td/aurorabot:latest
+## 🖥️ Unraid
 
-1. **Create fields** in the Unraid GUI:
-   - **Variable DISCORD_TOKEN** — paste your token (field is password-masked).
-   - **Varible ESPORTS_API_KEY** — paste your PandaScore API Key (password-masked).
-   - **Path** (⚠️ not a Variable — this one is easy to miss):
+1. In Unraid Docker, pull `ghcr.io/david4td/aurorabot:latest`.
+
+2. **Create fields** in the GUI:
+   - **Variable** `DISCORD_TOKEN` — your token (password-masked)
+   - **Variable** `ESPORTS_API_KEY` — your PandaScore key (password-masked)
+   - **Path** (⚠️ not a Variable — easy to miss):
+
      | Field | Value |
      |---|---|
      | Config Type | **Path** |
      | Container Path | `/appdata` |
      | Host Path | `/mnt/user/appdata/aurorabot` |
      | Access Mode | Read/Write |
-   - Advanced fields (log level, poll interval, dev guild IDs) are optional.
 
-   > **Skip the Path mapping and the bot still runs — but silently loses data.**
-   > The image declares `VOLUME ["/appdata"]`, so Docker creates an *anonymous*
-   > volume instead of failing. Nothing appears under
-   > `/mnt/user/appdata/aurorabot`, and every container recreate (including
-   > **Force Update**) starts from an empty database. Verify with:
+   - Everything else is optional (see the config table below).
+
+   > **Skip the Path mapping and the bot still runs — but silently loses all
+   > data on every Force Update.** The image declares `VOLUME ["/appdata"]`, so
+   > Docker creates an *anonymous* volume rather than failing: nothing appears
+   > on your share, and each container recreate starts from an empty database.
+   > Verify with:
    > ```bash
    > docker inspect aurorabot --format '{{json .Mounts}}'
    > ```
    > You want `"Type":"bind"` with `"Source":"/mnt/user/appdata/aurorabot"`. A
-   > `"Type":"volume"` with a long hex name means the mapping is missing.
+   > `"Type":"volume"` with a hex name means the mapping is missing.
+   >
+   > If the host directory is root-owned the bot will crash with
+   > `unable to open database file` — it runs as uid 1000:
+   > ```bash
+   > chown -R 1000:1000 /mnt/user/appdata/aurorabot
+   > ```
 
-2. Click **Apply**. Unraid pulls the image and starts the container with
-   `restart: unless-stopped`, so it comes back automatically after a reboot.
+3. **Apply.** `restart: unless-stopped`, so it survives reboots.
 
-> **Community Apps note:** if you host the template in a GitHub repo and add it
-> to CA's template repositories, it becomes installable directly from the
-> **Apps** tab. Otherwise the manual template copy above works immediately.
+**Compose alternative:** install the Compose Manager plugin, paste
+`docker/docker-compose.yml`, swap `build:` for
+`image: ghcr.io/david4td/aurorabot:latest`, and place your `.env` alongside it.
 
-### Option B — docker-compose (Unraid Compose Manager plugin)
-
-1. Install the **Compose Manager** plugin from Community Apps.
-2. Create a new stack, paste in `docker/docker-compose.yml`, and switch the
-   service from `build:` to the published image line:
-   `image: ghcr.io/YOUR_GITHUB_USER/aurorabot:latest`.
-3. Place your `.env` next to the compose file (or inline the env vars).
-4. **Compose Up**.
-
-### Where data & logs live
-
-Everything persistent is on the appdata volume:
+### Data on disk
 
 ```
-/mnt/user/appdata/aurorabot/          <- host path, mapped to /appdata
-├── aurorabot.db        # SQLite database (users, follows, predictions, alerts)
-├── aurorabot.db-wal    # write-ahead log
+/mnt/user/appdata/aurorabot/
+├── aurorabot.db        # users, follows, predictions, alerts, digests
+├── aurorabot.db-wal
 ├── aurorabot.db-shm
-└── logos/              # cached team logo PNGs, ~10 KB each
-    ├── 318-4f2a1c9b8e01.png
-    └── 2574-9c1d33ef7a20.png
+└── logos/              # cached team logos, ~10 KB each
 ```
 
-`logos/` is a pure cache — deleting it costs one re-download per team, nothing
-more.
+`logos/` is a pure cache — deleting it costs one re-download per team. The
+database survives image updates; the schema is applied idempotently on startup
+and column changes are migrated automatically.
 
-Container logs are viewable from the Unraid Docker tab (click the container →
-**Logs**) or `docker logs aurorabot`.
+### Updating
 
-### Updating the container
+Docker tab → **AuroraBot** → **Force Update**. Or:
 
-When a new image is pushed to GHCR:
-
-- **Unraid GUI:** Docker tab → click **AuroraBot** → **Force Update**
-  (or toggle *Advanced View* and hit the update icon). Unraid pulls the new
-  image and recreates the container; your appdata volume is untouched.
-- **Command line:**
-  ```bash
-  docker pull ghcr.io/YOUR_GITHUB_USER/aurorabot:latest
-  docker compose -f docker/docker-compose.yml up -d
-  ```
-
-Because the database lives on the mounted volume, updates never lose data.
+```bash
+docker pull ghcr.io/david4td/aurorabot:latest
+docker compose -f docker/docker-compose.yml up -d
+```
 
 ---
 
-## ⚙️ Configuration reference
+## ⚙️ Configuration
 
 | Variable | Required | Default | Description |
 |----------|:--------:|---------|-------------|
 | `DISCORD_TOKEN` | ✅ | — | Discord bot token |
 | `ESPORTS_API_KEY` | ✅ | — | PandaScore API key |
-| `DATABASE_PATH` | | `/appdata/aurorabot.db` | SQLite file path (inside container) |
-| `DEV_GUILD_IDS` | | _(empty)_ | Comma-separated guild IDs for instant command sync |
+| `DATABASE_PATH` | | `/appdata/aurorabot.db` | SQLite path inside the container |
+| `DEV_GUILD_IDS` | | — | Comma-separated guild IDs for instant command sync |
 | `ALERT_POLL_SECONDS` | | `60` | Match poll interval |
 | `ALERT_LEAD_MINUTES` | | `30` | Minutes before kick-off to post the reminder |
-| `TOP_TIER_ONLY` | | `true` | Restrict everything to top-tier tournaments |
-| `TIERS` | | `s,a` | PandaScore tier grades counting as Tier 1 (see above) |
-| `DIGEST_TZ` | | `Australia/Sydney` | Zone for the daily schedule digest |
-| `DIGEST_HOUR` | | `0` | Local hour the digest posts (0 = midnight) |
+| `TOP_TIER_ONLY` | | `true` | Restrict to top-tier tournaments |
+| `TIERS` | | `s,a` | Tier grades counting as Tier 1 |
+| `DIGEST_TZ` | | `Australia/Sydney` | Timezone the daily schedule treats as "today" |
+| `DIGEST_HOUR` | | `0` | Local hour the digest posts |
 | `HEALTH_PORT` | | `8080` | Internal health server port |
 | `LOG_LEVEL` | | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
-| `PANDASCORE_CS_SLUG` | | `cs-go` | PandaScore videogame slug for Counter-Strike |
+| `PANDASCORE_CS_SLUG` | | `cs-go` | PandaScore slug for Counter-Strike |
 
 ---
 
-## 🗄️ Database
+## 📁 Layout
 
-SQLite via `aiosqlite`, chosen so a single Unraid container needs no separate
-database service. The schema (`src/database/schema.sql`) is applied idempotently
-on every startup — safe across restarts and updates. Tables: `users`,
-`followed_teams`, `guild_games`, `team_emojis`, `alert_subscriptions`,
-`alerted_matches`, `alert_messages`, `match_digests`, `digest_matches`,
-`predictions`.
+```
+src/
+├── bot.py              # entrypoint: config, DB, API, cogs, health
+├── config.py           # env-driven settings
+├── database/           # aiosqlite layer + idempotent schema
+├── services/
+│   ├── pandascore.py   # async API client
+│   ├── emojis.py       # team logo → application emoji cache
+│   └── health.py       # /health server
+├── cogs/               # one module per feature area
+└── utils/              # tiers, regions, schedule, embeds, game catalogue
+docker/                 # Dockerfile, compose, Unraid template, icon
+```
 
-Column changes are handled by `Database._migrate()`, which runs before the
-schema script and is guarded by `PRAGMA table_info` checks. Upgrading from an
-older AuroraBot converts existing alert subscriptions in place — team
-subscriptions become `scope='team'`, whole-game ones `scope='game'` — so **no
-data is lost and no manual step is needed**; just pull the new image.
+Icon regenerates with `python docker/make_icon.py` (stdlib only, no Pillow).
 
-Prefer Postgres? A commented-out service and guidance are in
-`docker/docker-compose.yml`.
+## 🩺 Health
 
----
+`GET /health` returns `200` when the gateway is connected and the alert loop has
+run recently, else `503`; Docker's `HEALTHCHECK` uses it. Background loops log
+and swallow exceptions so a PandaScore hiccup never kills the bot, and `SIGTERM`
+shuts down cleanly.
 
-## 🩺 Health & reliability
+## 📝 Troubleshooting
 
-- `GET /health` returns `200` when the gateway is connected and the alert loop
-  has run recently, else `503`. Docker's `HEALTHCHECK` uses it.
-- Background loops (alerts, prediction resolution) swallow and log exceptions so
-  a transient PandaScore hiccup never kills the bot.
-- Graceful shutdown on `SIGTERM` (Docker stop) closes the DB and HTTP sessions
-  cleanly.
+- **Empty feeds** — usually the tier filter. Try `TOP_TIER_ONLY=false` to confirm.
+- **No standings** — bracket-only stages have no table; try the group stage.
+- **Commands appear twice** — a leftover global command set alongside a guild
+  one. Restart with `DEV_GUILD_IDS` set; the bot clears the duplicates.
+- **New commands missing** — global sync can take up to an hour. Use
+  `DEV_GUILD_IDS` for instant sync.
+- **Alerts reset on update** — the `/appdata` Path mapping is missing (see above).
+- **PandaScore slugs change occasionally.** If one game stops returning data,
+  check the [docs](https://developers.pandascore.co) and adjust
+  `src/utils/games.py` (or `PANDASCORE_CS_SLUG`).
 
----
-
-## 📝 Notes
-
-- PandaScore videogame slugs occasionally change. If a game's commands stop
-  returning data, check the [PandaScore docs](https://developers.pandascore.co)
-  and adjust the slug in `src/utils/games.py` (or `PANDASCORE_CS_SLUG` for CS).
-- Standings tables aren't available for every tournament (bracket-only events
-  won't have them) — the bot tells the user when that's the case.
-- Empty feeds are usually the tier filter doing its job, not a bug: outside
-  major-league hours there genuinely are no Tier 1 matches. `/standings` names
-  the tournaments it filtered out and their grades, so you can see whether the
-  bar is set too high — widen `TIERS` or set `TOP_TIER_ONLY=false` to confirm.
-  `LOG_LEVEL=DEBUG` logs the tournament counts at each filter step.
-- Alert subscriptions are per **channel**, and `/alerts` requires the *Manage
-  Server* permission. The bot needs *Add Reactions* in the alert channel for
-  reaction predictions; without it the reminder still posts, and a warning is
-  logged.
-
----
+`LOG_LEVEL=DEBUG` is usable — noisy third-party loggers are pinned down.
 
 ## 📄 License
 

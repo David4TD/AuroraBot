@@ -39,6 +39,17 @@ def team_ids(match: dict) -> set[int]:
     return {team["id"] for team in opponents(match)}
 
 
+def league_id(match: dict) -> int | None:
+    """The league a match belongs to.
+
+    PandaScore nests League > Serie > Tournament, and a league's stages are
+    separate tournaments — LCK's "Legend Group" and "Rise Group" run in
+    parallel. Subscribing at the league level catches all of them.
+    """
+    value = (match.get("league") or {}).get("id")
+    return int(value) if value else None
+
+
 def tournament_id(match: dict) -> int | None:
     tournament = match.get("tournament") or {}
     value = tournament.get("id")

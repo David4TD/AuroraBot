@@ -32,7 +32,11 @@ from discord.ext import commands, tasks
 from ..services.pandascore import PandaScoreError
 from ..utils.embeds import BRAND, GREEN
 from ..utils.games import label_for, resolve_slug
-from ..utils.matches import opponents, tournament_id as match_tournament_id
+from ..utils.matches import (
+    league_id as match_league_id,
+    opponents,
+    tournament_id as match_tournament_id,
+)
 from ..utils.predictions import Outcome, submit_prediction
 from ..utils.regions import region_flag
 from ..utils.schedule import iso_date, local_hhmm, local_now, local_today, within_day
@@ -45,6 +49,32 @@ SWEEP_MINUTES = 5
 FETCH_SIZE = 50
 MAX_ROWS = 25          # Discord's hard cap on select options
 PRUNE_AFTER_DAYS = 14
+
+
+def _digestable(sub) -> bool:
+    """Subscriptions that get a daily schedule: a league or a single stage.
+
+    Team and whole-game scopes are deliberately excluded — a team plays at most
+    once a day, and a whole-game digest would be a wall of text.
+    """
+    scope = sub["scope"] or "game"
+    if scope == "league":
+        return sub["league_id"] is not None
+    if scope == "tournament":
+        return sub["tournament_id"] is not None
+    return False
+
+
+def _target_id(sub) -> int | None:
+    if (sub["scope"] or "game") == "league":
+        return int(sub["league_id"]) if sub["league_id"] is not None else None
+    return int(sub["tournament_id"]) if sub["tournament_id"] is not None else None
+
+
+def _target_name(sub) -> str | None:
+    if (sub["scope"] or "game") == "league":
+        return sub["league_name"]
+    return sub["tournament_name"]
 
 
 def _teams_of(match: dict) -> tuple[dict, dict] | None:
@@ -163,8 +193,7 @@ class Digest(commands.Cog):
         subs = [
             s
             for s in await self.bot.db.list_subscriptions(interaction.guild_id)
-            if (s["scope"] or "game") == "tournament"
-            and int(s["channel_id"]) == interaction.channel_id
+            if _digestable(s) and int(s["channel_id"]) == interaction.channel_id
         ]
         if not subs:
             await interaction.followup.send(
@@ -200,10 +229,7 @@ class Digest(commands.Cog):
             return  # today's post isn't due yet
 
         today = local_today(tz)
-        subs = [
-            s for s in await self.bot.db.all_subscriptions()
-            if (s["scope"] or "game") == "tournament" and s["tournament_id"] is not None
-        ]
+        subs = [s for s in await self.bot.db.all_subscriptions() if _digestable(s)]
         if not subs:
             return
 
@@ -226,8 +252,8 @@ class Digest(commands.Cog):
                 guild_id=int(sub["guild_id"]) if sub["guild_id"] else None,
                 channel_id=channel_id,
                 subscription_id=int(sub["id"]),
-                tournament_id=int(sub["tournament_id"]),
-                tournament_name=sub["tournament_name"],
+                tournament_id=_target_id(sub),
+                tournament_name=_target_name(sub),
                 game=sub["game"],
                 local_date=date_key,
             )
@@ -240,8 +266,8 @@ class Digest(commands.Cog):
                 guild_id=int(sub["guild_id"]) if sub["guild_id"] else None,
                 channel_id=channel_id,
                 subscription_id=int(sub["id"]),
-                tournament_id=int(sub["tournament_id"]),
-                tournament_name=sub["tournament_name"],
+                tournament_id=_target_id(sub),
+                tournament_name=_target_name(sub),
                 game=sub["game"],
                 local_date=date_key,
             )
@@ -302,12 +328,16 @@ class Digest(commands.Cog):
             log.warning("digest: could not fetch %s: %s", sub["game"], exc)
             return []
 
-        wanted = int(sub["tournament_id"])
+        by_league = (sub["scope"] or "game") == "league"
+        wanted = int(sub["league_id"] if by_league else sub["tournament_id"])
         out: list[tuple[dict, tuple[dict, dict]]] = []
         seen: set[int] = set()
         for match in filter_for(self.bot.settings, feed):
             mid = int(match.get("id", 0))
-            if mid in seen or match_tournament_id(match) != wanted:
+            if mid in seen:
+                continue
+            got = match_league_id(match) if by_league else match_tournament_id(match)
+            if got != wanted:
                 continue
             if not within_day(parse_dt(match.get("begin_at")), today, tz):
                 continue
@@ -322,7 +352,7 @@ class Digest(commands.Cog):
 
     def _build_embed(self, sub, today, matches) -> discord.Embed:
         tz = self.bot.settings.digest_tz
-        name = sub["tournament_name"] or "Tournament"
+        name = _target_name(sub) or "Tournament"
         flag = region_flag(name) or ""
         icons = self.bot.icons
 

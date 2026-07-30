@@ -25,7 +25,7 @@ from ..utils.choices import GAME_CHOICES
 from ..utils.embeds import BRAND, GREEN, match_embed
 from ..utils.games import label_for, rank_by_name, resolve_slug
 from ..utils.guildgames import blocked_message
-from ..utils.matches import opponents, team_ids, tournament_id
+from ..utils.matches import league_id, opponents, team_ids, tournament_id
 from ..utils.predictions import Outcome, submit_prediction
 from ..utils.regions import event_flag, region_flag
 from ..utils.tiers import filter_for
@@ -42,6 +42,11 @@ TOURNAMENT_CACHE_SECONDS = 120
 
 FETCH_SIZE = 50
 PRUNE_AFTER_DAYS = 3
+
+# Autocomplete values are prefixed so a league and a tournament id can't be
+# confused for one another.
+LEAGUE_PREFIX = "L:"
+TOURNAMENT_PREFIX = "T:"
 PRUNE_EVERY_POLLS = 60  # ~hourly at the default 60s poll interval
 
 
@@ -96,19 +101,62 @@ class Alerts(commands.Cog):
     async def _tournament_autocomplete(
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
+        """Offer whole leagues first, then the individual stages within them.
+
+        A league's stages are separate PandaScore tournaments and often run in
+        parallel — LCK splits into a Legend Group and a Rise Group — so picking
+        one stage silently misses the others. The league entry covers all of
+        them; the stage entries stay available for narrower subscriptions.
+
+        The league list is derived from the tournaments already fetched, so this
+        costs no extra API call.
+        """
         game = getattr(interaction.namespace, "game", None)
         if not game:
             return []
         tournaments = await self._current_tournaments(game)
         query = (current or "").strip().lower()
-        choices = []
+
+        # Distinct leagues, in first-seen order, with how many stages each has.
+        leagues: dict[int, dict] = {}
+        for t in tournaments:
+            lg = t.get("league") or {}
+            if not lg.get("id"):
+                continue
+            entry = leagues.setdefault(
+                int(lg["id"]), {"name": lg.get("name") or "League", "stages": 0}
+            )
+            entry["stages"] += 1
+
+        choices: list[app_commands.Choice[str]] = []
+
+        for lid, info in leagues.items():
+            name = info["name"]
+            if query and query not in name.lower():
+                continue
+            flag = region_flag(name) or ""
+            suffix = (
+                f" — all {info['stages']} stages" if info["stages"] > 1
+                else " — whole league"
+            )
+            display = f"{flag} {name}{suffix}".strip()
+            choices.append(
+                app_commands.Choice(name=display[:100], value=f"{LEAGUE_PREFIX}{lid}")
+            )
+            if len(choices) == 25:
+                return choices
+
         for t in tournaments:
             label = tournament_label(t)
             if query and query not in label.lower():
                 continue
             flag = event_flag(t)
-            display = f"{flag} {label}" if flag else label
-            choices.append(app_commands.Choice(name=display[:100], value=str(t["id"])))
+            display = f"↳ {flag} {label}" if flag else f"↳ {label}"
+            choices.append(
+                app_commands.Choice(
+                    name=display[:100], value=f"{TOURNAMENT_PREFIX}{t['id']}"
+                )
+            )
             if len(choices) == 25:
                 break
         return choices
@@ -120,7 +168,7 @@ class Alerts(commands.Cog):
     @app_commands.describe(
         game="Game to watch (required).",
         team="Only alert for this team in that game.",
-        tournament="Only alert for this tournament (pick from the list).",
+        tournament="A whole league, or one stage of it (pick from the list).",
     )
     @app_commands.choices(game=GAME_CHOICES)
     @app_commands.autocomplete(tournament=_tournament_autocomplete)
@@ -149,6 +197,7 @@ class Alerts(commands.Cog):
         scope = "game"
         team_id = team_name = None
         tour_id = tour_name = None
+        lg_id = lg_name = None
 
         if team:
             resolved = await self._resolve_team(team, game.value)
@@ -160,15 +209,19 @@ class Alerts(commands.Cog):
             scope, team_id, team_name = "team", resolved["id"], resolved["name"]
 
         elif tournament:
-            resolved = await self._resolve_tournament(tournament, game.value)
+            resolved = await self._resolve_target(tournament, game.value)
             if resolved is None:
                 await interaction.followup.send(
-                    f"Couldn't match **{tournament}** to a current {game.name} tournament. "
-                    "Start typing and pick one from the list.",
+                    f"Couldn't match **{tournament}** to a current {game.name} league "
+                    "or tournament. Start typing and pick one from the list.",
                     ephemeral=True,
                 )
                 return
-            scope, tour_id, tour_name = "tournament", resolved["id"], resolved["name"]
+            scope = resolved["scope"]
+            if scope == "league":
+                lg_id, lg_name = resolved["id"], resolved["name"]
+            else:
+                tour_id, tour_name = resolved["id"], resolved["name"]
 
         created = await self.bot.db.add_subscription(
             guild_id=interaction.guild_id,
@@ -178,6 +231,8 @@ class Alerts(commands.Cog):
             scope=scope,
             team_id=team_id,
             team_name=team_name,
+            league_id=lg_id,
+            league_name=lg_name,
             tournament_id=tour_id,
             tournament_name=tour_name,
         )
@@ -189,6 +244,8 @@ class Alerts(commands.Cog):
 
         if scope == "team":
             target = f"**{team_name}** ({game.name})"
+        elif scope == "league":
+            target = f"**{lg_name}** — every stage"
         elif scope == "tournament":
             target = f"**{tour_name}**"
         else:
@@ -219,28 +276,71 @@ class Alerts(commands.Cog):
         best = rank_by_name(results, query)[0]  # exact name wins over partials
         return {"id": int(best["id"]), "name": best.get("name", "Team")}
 
-    async def _resolve_tournament(self, value: str, game_key: str) -> dict | None:
-        """Accept an autocomplete ID, or fall back to matching on name."""
+    async def _resolve_target(self, value: str, game_key: str) -> dict | None:
+        """Resolve an autocomplete value — or a typed name — to a league/tournament.
+
+        Autocomplete sends ``L:<id>`` or ``T:<id>``. A hand-typed name falls back
+        to matching league names first (the more useful default), then stages.
+        """
         tournaments = await self._current_tournaments(game_key)
+        value = value.strip()
+
+        if value.startswith(LEAGUE_PREFIX):
+            wanted = value[len(LEAGUE_PREFIX):]
+            if not wanted.isdigit():
+                return None
+            wanted = int(wanted)
+            for t in tournaments:
+                lg = t.get("league") or {}
+                if lg.get("id") and int(lg["id"]) == wanted:
+                    return {
+                        "scope": "league",
+                        "id": wanted,
+                        "name": lg.get("name") or "League",
+                    }
+            return None
+
+        if value.startswith(TOURNAMENT_PREFIX):
+            value = value[len(TOURNAMENT_PREFIX):]
 
         if value.isdigit():
             wanted = int(value)
             for t in tournaments:
                 if int(t["id"]) == wanted:
-                    return {"id": wanted, "name": tournament_label(t)}
-            # Typed/stale ID: confirm it exists before storing it.
+                    return {
+                        "scope": "tournament",
+                        "id": wanted,
+                        "name": tournament_label(t),
+                    }
+            # Typed or stale id: confirm it exists before storing it.
             try:
                 fetched = await self.bot.api.get_tournament(wanted)
             except PandaScoreError:
                 return None
             if fetched.get("id"):
-                return {"id": wanted, "name": tournament_label(fetched)}
+                return {
+                    "scope": "tournament",
+                    "id": wanted,
+                    "name": tournament_label(fetched),
+                }
             return None
 
-        query = value.strip().lower()
+        query = value.lower()
+        for t in tournaments:                      # league names take priority
+            lg = t.get("league") or {}
+            if lg.get("id") and query in str(lg.get("name") or "").lower():
+                return {
+                    "scope": "league",
+                    "id": int(lg["id"]),
+                    "name": lg.get("name") or "League",
+                }
         for t in tournaments:
             if query in tournament_label(t).lower():
-                return {"id": int(t["id"]), "name": tournament_label(t)}
+                return {
+                    "scope": "tournament",
+                    "id": int(t["id"]),
+                    "name": tournament_label(t),
+                }
         return None
 
     @alerts.command(name="list", description="List this server's alert subscriptions.")
@@ -251,12 +351,16 @@ class Alerts(commands.Cog):
                 "No alerts configured. Use `/alerts add`.", ephemeral=True
             )
             return
-        icon = {"team": "👥", "tournament": "🏆", "game": "🎮"}
+        icon = {"team": "👥", "league": "🏅", "tournament": "🏆", "game": "🎮"}
         lines = []
         for s in subs:
             scope = s["scope"] or "game"
             if scope == "team":
                 target = s["team_name"] or "a team"
+            elif scope == "league":
+                target = s["league_name"] or "a league"
+                flag = region_flag(target)
+                target = f"{flag} {target} (all stages)" if flag                     else f"{target} (all stages)"
             elif scope == "tournament":
                 target = s["tournament_name"] or "a tournament"
                 flag = region_flag(target)
@@ -296,6 +400,12 @@ class Alerts(commands.Cog):
         scope = sub["scope"] or "game"
         if scope == "team":
             return sub["team_id"] is not None and int(sub["team_id"]) in team_ids(match)
+        if scope == "league":
+            # Covers every stage of the league, however PandaScore splits it.
+            return (
+                sub["league_id"] is not None
+                and league_id(match) == int(sub["league_id"])
+            )
         if scope == "tournament":
             return (
                 sub["tournament_id"] is not None

@@ -58,24 +58,41 @@ class Database:
         """
         assert self._conn is not None
         columns = await self._table_columns("alert_subscriptions")
-        if not columns or "tournament_id" in columns:
-            return  # fresh database, or already migrated
+        if not columns:
+            return  # fresh database; schema.sql builds it correctly
 
-        log.info("Migrating alert_subscriptions to tournament-aware schema…")
-        for ddl in (
-            "ALTER TABLE alert_subscriptions ADD COLUMN scope TEXT NOT NULL DEFAULT 'game'",
-            "ALTER TABLE alert_subscriptions ADD COLUMN tournament_id INTEGER",
-            "ALTER TABLE alert_subscriptions ADD COLUMN tournament_name TEXT",
-        ):
-            await self._conn.execute(ddl)
-        # Existing rows are team subs if they named a team, else game-wide.
-        await self._conn.execute(
-            "UPDATE alert_subscriptions SET scope = 'team' WHERE team_id IS NOT NULL"
-        )
-        await self._conn.commit()
-        # The legacy UNIQUE(channel_id, team_id, game) constraint stays behind
-        # on the old table definition; it's strictly weaker than the new
-        # idx_alertsub_unique index, so it costs nothing to leave in place.
+        # Step 1: team-only table → tournament-aware.
+        if "tournament_id" not in columns:
+            log.info("Migrating alert_subscriptions to tournament-aware schema…")
+            for ddl in (
+                "ALTER TABLE alert_subscriptions ADD COLUMN scope TEXT NOT NULL DEFAULT 'game'",
+                "ALTER TABLE alert_subscriptions ADD COLUMN tournament_id INTEGER",
+                "ALTER TABLE alert_subscriptions ADD COLUMN tournament_name TEXT",
+            ):
+                await self._conn.execute(ddl)
+            # Existing rows are team subs if they named a team, else game-wide.
+            await self._conn.execute(
+                "UPDATE alert_subscriptions SET scope = 'team' WHERE team_id IS NOT NULL"
+            )
+            await self._conn.commit()
+            # The legacy UNIQUE(channel_id, team_id, game) constraint stays
+            # behind on the old table definition; it's strictly weaker than
+            # idx_alertsub_unique, so it costs nothing to leave in place.
+
+        # Step 2: add league scope, for subscribing to a whole league whose
+        # stages are separate tournaments (LCK's Legend/Rise groups).
+        if "league_id" not in columns:
+            log.info("Migrating alert_subscriptions to league-aware schema…")
+            for ddl in (
+                "ALTER TABLE alert_subscriptions ADD COLUMN league_id INTEGER",
+                "ALTER TABLE alert_subscriptions ADD COLUMN league_name TEXT",
+            ):
+                await self._conn.execute(ddl)
+            # The uniqueness index has to widen to include league_id. CREATE
+            # ... IF NOT EXISTS in schema.sql would silently keep the old
+            # narrower definition, so drop it and let schema.sql rebuild it.
+            await self._conn.execute("DROP INDEX IF EXISTS idx_alertsub_unique")
+            await self._conn.commit()
 
     @property
     def conn(self) -> aiosqlite.Connection:
@@ -280,6 +297,8 @@ class Database:
         scope: str = "game",
         team_id: int | None = None,
         team_name: str | None = None,
+        league_id: int | None = None,
+        league_name: str | None = None,
         tournament_id: int | None = None,
         tournament_name: str | None = None,
     ) -> bool:
@@ -289,8 +308,9 @@ class Database:
                 """
                 INSERT INTO alert_subscriptions
                     (guild_id, channel_id, game, scope, team_id, team_name,
-                     tournament_id, tournament_name, created_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     league_id, league_name, tournament_id, tournament_name,
+                     created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(guild_id),
@@ -299,6 +319,8 @@ class Database:
                     scope,
                     team_id,
                     team_name,
+                    league_id,
+                    league_name,
                     tournament_id,
                     tournament_name,
                     str(created_by),
@@ -320,7 +342,7 @@ class Database:
     async def list_subscriptions(self, guild_id: int) -> list[aiosqlite.Row]:
         cur = await self.conn.execute(
             "SELECT * FROM alert_subscriptions WHERE guild_id = ? "
-            "ORDER BY game, scope, team_name, tournament_name",
+            "ORDER BY game, scope, team_name, league_name, tournament_name",
             (str(guild_id),),
         )
         return list(await cur.fetchall())
