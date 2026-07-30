@@ -80,12 +80,22 @@ How it behaves, by design:
   unknown teams. A `429` pauses minting for five minutes.
 - **The cap is respected.** Nearing 2000, least-recently-used icons are deleted
   so long-tail teams don't squat.
-- **Every logo is re-encoded before upload.** Discord's emoji endpoint answers
-  `50046 Invalid Asset` for formats it won't take — notably **WebP**, which
-  discord.py's mime sniffer forwards happily — and for oversized assets.
-  PandaScore serves a mix, so Pillow decodes each logo and re-encodes it as a
-  square 128px RGBA PNG (a few hundred bytes), padding wide wordmarks rather
-  than stretching them.
+- **Every logo is re-encoded before upload.** Discord answers `50046 Invalid
+  Asset` for emoji assets it considers oversized, and the enforced threshold is
+  far below the documented 256 KiB. Measured against real PandaScore logos:
+
+  | Logo | Source | Result |
+  |---|---|---|
+  | Dplus KIA | 500×163, 4.9 KB | ✅ accepted |
+  | Team WE | 300×300, 13.8 KB | ✅ accepted |
+  | JD Gaming | 500×402, 18.9 KB | ❌ 50046 |
+  | Hanwha Life | 1000×1000, 45.6 KB | ❌ 50046 |
+
+  Format was never the problem — all of them are ordinary PNGs. Pillow re-encodes
+  each logo as a square 128px PNG, stepping down through 96/64/48px and palette
+  quantization until it fits a 12 KB budget (comfortably under the largest size
+  observed to succeed). The same ten logos now come out at 1.3–11.5 KB. Wide
+  wordmarks are padded onto a transparent square rather than stretched.
 - **Failure is invisible, and remembered.** A dead URL, an SVG or a revoked
   permission leaves plain text, and the standings table falls back to the
   team's country flag. After two failed attempts a team is given up on, so a

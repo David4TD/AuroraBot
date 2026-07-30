@@ -54,6 +54,13 @@ MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024
 # Emoji render at ~32px; 128 keeps them crisp on hi-dpi without bloating.
 EMOJI_EDGE = 128
 
+# Measured against the logos Discord actually refused: every rejection was
+# >= 18.9 KB / >= 106k pixels, while 13.8 KB / 90k pixels went through. The
+# documented 256 KiB ceiling is clearly not what's being enforced, so aim well
+# under the largest size observed to succeed and shrink until we get there.
+TARGET_BYTES = 12 * 1024
+FALLBACK_EDGES = (128, 96, 64, 48)
+
 UPLOADS_PER_WINDOW = 15
 WINDOW_SECONDS = 60.0
 BACKOFF_SECONDS = 300.0          # after a 429 or repeated failures
@@ -66,44 +73,65 @@ MAX_ATTEMPTS = 2
 _NAME_SAFE = re.compile(r"[^a-z0-9_]+")
 
 
+def _render(img: "Image.Image", edge: int, quantize: bool) -> bytes:
+    """Square-pad and encode at the given edge length.
+
+    Padding rather than stretching keeps wide wordmark logos legible.
+    """
+    frame = img.copy()
+    frame.thumbnail((edge, edge), Image.LANCZOS)
+
+    canvas = Image.new("RGBA", (edge, edge), (0, 0, 0, 0))
+    canvas.paste(frame, ((edge - frame.width) // 2, (edge - frame.height) // 2))
+
+    if quantize:
+        # Palette PNG with alpha: a big win on flat-colour crests, which is
+        # what most team logos are.
+        canvas = canvas.quantize(colors=128, method=Image.FASTOCTREE)
+
+    buf = io.BytesIO()
+    canvas.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
 def normalise_image(raw: bytes) -> bytes | None:
     """Re-encode any logo into a Discord-safe emoji asset.
 
-    Discord's emoji endpoint answers ``50046 Invalid Asset`` for formats it
-    won't take (notably **WebP**, which discord.py's mime sniffer happily
-    forwards) and for oversized assets. PandaScore serves a mix, so rather than
-    guess, every logo is decoded and re-encoded here as a square RGBA PNG of at
-    most :data:`EMOJI_EDGE` px.
+    Discord answers ``50046 Invalid Asset`` for emoji assets it considers
+    oversized — measured empirically, well below the documented 256 KiB — so
+    every logo is decoded and re-encoded as a small square RGBA PNG.
 
-    Square-padding rather than stretching keeps wide wordmark logos legible.
-    Returns ``None`` if the bytes aren't a decodable image.
+    Encoding is attempted at progressively smaller sizes until the result fits
+    :data:`TARGET_BYTES`, since a flat crest and a photographic logo of the same
+    dimensions compress very differently. Returns ``None`` only if the bytes
+    aren't a decodable image at all.
     """
     try:
-        with Image.open(io.BytesIO(raw)) as img:
-            # Animated sources collapse to their first frame: a still PNG is
-            # better than an emoji Discord might reject.
-            img.seek(0) if getattr(img, "is_animated", False) else None
-            img = img.convert("RGBA")
+        with Image.open(io.BytesIO(raw)) as opened:
+            # Animated sources collapse to their first frame; a still PNG beats
+            # an emoji Discord might reject.
+            if getattr(opened, "is_animated", False):
+                opened.seek(0)
+            img = opened.convert("RGBA")
 
-            img.thumbnail((EMOJI_EDGE, EMOJI_EDGE), Image.LANCZOS)
-
-            canvas = Image.new("RGBA", (EMOJI_EDGE, EMOJI_EDGE), (0, 0, 0, 0))
-            canvas.paste(
-                img,
-                ((EMOJI_EDGE - img.width) // 2, (EMOJI_EDGE - img.height) // 2),
-            )
-
-            buf = io.BytesIO()
-            canvas.save(buf, format="PNG", optimize=True)
-            data = buf.getvalue()
+            best: bytes | None = None
+            for edge in FALLBACK_EDGES:
+                for quantize in (False, True):
+                    data = _render(img, edge, quantize)
+                    if best is None or len(data) < len(best):
+                        best = data
+                    if len(data) <= TARGET_BYTES:
+                        return data
     except (UnidentifiedImageError, OSError, ValueError, MemoryError) as exc:
         log.debug("Could not decode logo (%d bytes): %s", len(raw), exc)
         return None
 
-    if len(data) > MAX_IMAGE_BYTES:  # pragma: no cover - 128px PNGs are tiny
-        log.debug("Normalised logo still too large: %d bytes", len(data))
-        return None
-    return data
+    # Nothing hit the target; ship the smallest we produced if it's at least
+    # within Discord's documented ceiling.
+    if best is not None and len(best) <= MAX_IMAGE_BYTES:
+        log.debug("Logo only compressed to %d bytes (target %d)", len(best), TARGET_BYTES)
+        return best
+    return None
 
 
 def emoji_name_for(team_id: int, team_name: str | None) -> str:
