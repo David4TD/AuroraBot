@@ -18,11 +18,13 @@ ENV PYTHONUNBUFFERED=1 \
     HEALTH_PORT=8080 \
     DATABASE_PATH=/appdata/aurorabot.db
 
-# Create a non-root user, plus the data dir it will own. /appdata sits outside
-# WORKDIR, so it needs its own chown — `chown -R /app` does not reach it.
+# Create a non-root user, plus the dirs it will own. Both are created
+# explicitly: /appdata sits outside WORKDIR so it needs its own chown, and /app
+# does not exist yet at this point — the WORKDIR instruction below is what would
+# otherwise create it, which is too late for the chown here.
 RUN groupadd --gid 1000 aurora \
     && useradd --uid 1000 --gid aurora --shell /bin/bash --create-home aurora \
-    && mkdir -p /appdata \
+    && mkdir -p /app /appdata \
     && chown -R aurora:aurora /app /appdata
 
 WORKDIR /app
