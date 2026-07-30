@@ -25,6 +25,7 @@ from ..utils.choices import GAME_CHOICES
 from ..utils.embeds import BRAND, standings_embed
 from ..utils.games import rank_by_name, resolve_slug
 from ..utils.guildgames import blocked_message
+from ..utils.regions import event_flag, region_flag, region_label
 from ..utils.tiers import describe, filter_for, tier_label
 from ..utils.tournaments import current_tournaments, parse_dt, tournament_label
 
@@ -93,11 +94,16 @@ async def _show_tournaments(
         return
     tournaments = eligible
 
+    name = league.get("name")
+    flag = region_flag(name)
+    region = region_label(name)
     embed = discord.Embed(
-        title=f"🏆 {league.get('name')}",
+        title=f"🏆 {flag + ' ' if flag else ''}{name}",
         description="Choose a current season / split below to see its standings table.",
         color=BRAND,
     )
+    if region:
+        embed.add_field(name="Region", value=f"{flag} {region}", inline=True)
     if league.get("image_url"):
         embed.set_thumbnail(url=league["image_url"])
     view = TournamentView(cog, tournaments)
@@ -113,12 +119,16 @@ class LeagueSelect(discord.ui.Select):
         self._leagues = {str(l["id"]): l for l in leagues[:25]}
         options = []
         for l in leagues[:25]:
-            region = l.get("region") or ""
+            name = str(l.get("name", "League"))
+            # PandaScore has no region field on leagues (the old l["region"]
+            # read here was always None), so derive it from the name.
+            flag = region_flag(name)
             options.append(
                 discord.SelectOption(
-                    label=str(l.get("name", "League"))[:100],
+                    label=name[:100],
                     value=str(l["id"]),
-                    description=region[:100] or None,
+                    description=region_label(name),
+                    emoji=flag,
                 )
             )
         super().__init__(placeholder="Which league did you mean?", options=options)
@@ -138,6 +148,8 @@ class LeagueView(discord.ui.View):
 class TournamentSelect(discord.ui.Select):
     def __init__(self, cog: "Standings", tournaments: list[dict]) -> None:
         self.cog = cog
+        # Kept so the standings embed can show the event's region flag.
+        self._tournaments = {str(t["id"]): t for t in tournaments[:25]}
         now = datetime.now(timezone.utc)
         options = []
         for t in tournaments[:25]:
@@ -153,6 +165,7 @@ class TournamentSelect(discord.ui.Select):
                     label=tournament_label(t),
                     value=str(t["id"]),
                     description=hint,
+                    emoji=event_flag(t),
                 )
             )
         super().__init__(
@@ -178,7 +191,11 @@ class TournamentSelect(discord.ui.Select):
                 ephemeral=True,
             )
             return
-        await interaction.followup.send(embed=standings_embed(label, standings))
+        await interaction.followup.send(
+            embed=standings_embed(
+                label, standings, self._tournaments.get(self.values[0])
+            )
+        )
 
 
 class TournamentView(discord.ui.View):

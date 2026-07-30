@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import discord
 
 from .games import REFERENCE_SITES, label_for
+from .regions import event_flag, event_region, team_flag
 from .tiers import tier_label
 
 BRAND = discord.Color.from_rgb(138, 99, 255)  # AuroraBot purple
@@ -60,7 +61,14 @@ def match_embed(match: dict, game_key: str | None = None) -> discord.Embed:
     tournament = (match.get("tournament") or {}).get("name")
     context = " · ".join(x for x in [league, serie, tournament] if x)
     if context:
-        embed.add_field(name="Event", value=context, inline=False)
+        # Region flag leads the event line so the circuit is recognisable at a
+        # glance (🇰🇷 LCK vs 🇪🇺 LEC) without reading the names.
+        flag = event_flag(match)
+        embed.add_field(
+            name="Event",
+            value=f"{flag} {context}" if flag else context,
+            inline=False,
+        )
 
     embed.add_field(name="Format", value=match.get("match_type", "—"), inline=True)
     embed.add_field(
@@ -86,17 +94,26 @@ def match_embed(match: dict, game_key: str | None = None) -> discord.Embed:
     return embed
 
 
-def standings_embed(tournament_name: str, standings: list[dict]) -> discord.Embed:
-    embed = discord.Embed(
-        title=f"📊 Standings · {tournament_name}", color=BRAND
-    )
+def standings_embed(
+    tournament_name: str,
+    standings: list[dict],
+    tournament: dict | None = None,
+) -> discord.Embed:
+    flag = event_flag(tournament) if tournament else None
+    heading = f"{flag} {tournament_name}" if flag else tournament_name
+    embed = discord.Embed(title=f"📊 Standings · {heading}", color=BRAND)
     lines = []
     for i, row in enumerate(standings[:20], start=1):
-        team = (row.get("team") or {}).get("name", "—")
+        team = row.get("team") or {}
+        name = team.get("name", "—")
+        # Team flags come from PandaScore's own `location` field, unlike event
+        # flags which have to be derived from names.
+        tflag = team_flag(team)
+        label = f"{tflag} **{name}**" if tflag else f"**{name}**"
         wins = row.get("wins", row.get("total_win", "—"))
         losses = row.get("losses", row.get("total_loss", "—"))
         rank = row.get("rank", i)
-        lines.append(f"`{rank:>2}` **{team}** — {wins}W / {losses}L")
+        lines.append(f"`{rank:>2}` {label} — {wins}W / {losses}L")
     embed.description = "\n".join(lines) or "No standings available."
     embed.set_footer(text="AuroraBot · Tier 1 only · powered by PandaScore")
     return embed
@@ -104,7 +121,10 @@ def standings_embed(tournament_name: str, standings: list[dict]) -> discord.Embe
 
 def analytics_embed(team: dict, recent: list[dict], game_key: str | None) -> discord.Embed:
     name = team.get("name", "Unknown")
-    embed = discord.Embed(title=f"🔬 Deep Analytics · {name}", color=BRAND)
+    flag = team_flag(team)
+    embed = discord.Embed(
+        title=f"🔬 Deep Analytics · {flag + ' ' if flag else ''}{name}", color=BRAND
+    )
     if team.get("image_url"):
         embed.set_thumbnail(url=team["image_url"])
 

@@ -27,6 +27,7 @@ from ..utils.games import label_for, rank_by_name, resolve_slug
 from ..utils.guildgames import blocked_message
 from ..utils.matches import opponents, team_ids, tournament_id
 from ..utils.predictions import Outcome, submit_prediction
+from ..utils.regions import event_flag, region_flag
 from ..utils.tiers import filter_for
 from ..utils.tournaments import current_tournaments, parse_dt, tournament_label
 
@@ -105,7 +106,9 @@ class Alerts(commands.Cog):
             label = tournament_label(t)
             if query and query not in label.lower():
                 continue
-            choices.append(app_commands.Choice(name=label, value=str(t["id"])))
+            flag = event_flag(t)
+            display = f"{flag} {label}" if flag else label
+            choices.append(app_commands.Choice(name=display[:100], value=str(t["id"])))
             if len(choices) == 25:
                 break
         return choices
@@ -256,6 +259,9 @@ class Alerts(commands.Cog):
                 target = s["team_name"] or "a team"
             elif scope == "tournament":
                 target = s["tournament_name"] or "a tournament"
+                flag = region_flag(target)
+                if flag:
+                    target = f"{flag} {target}"
             else:
                 target = f"all {label_for(s['game'])}"
             lines.append(

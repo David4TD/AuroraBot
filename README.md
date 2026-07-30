@@ -60,6 +60,38 @@ AuroraBot over-fetches and filters client-side in `src/utils/tiers.py`.
 
 > Sources: [Tournaments in-depth](https://developers.pandascore.co/docs/tournaments-in-depth)
 
+### 🌍 Region flags
+
+Events, tournaments and teams carry a region flag — 🇰🇷 LCK, 🇪🇺 LEC, 🇨🇳 LPL,
+🌏 VCT Pacific, 🌍 Worlds — in match embeds, the standings title and table, the
+league and split pickers, the `/alerts add` autocomplete and the `/predict`
+match list.
+
+**Teams** use PandaScore's own `location` field (an ISO-3166 alpha-2 code),
+converted arithmetically to a flag, so any country works.
+
+**Events don't**: PandaScore exposes *no* region or country field on leagues or
+tournaments (v2.53 — League is id/name/slug/url/image_url/series/videogame;
+Tournament adds tier, dates and rosters). So `src/utils/regions.py` derives it
+in three passes:
+
+1. an exact match on the league name in `LEAGUE_REGIONS` — accurate, and small
+   because only Tier 1 events are ever shown;
+2. a keyword scan for region words ("EMEA", "Pacific", "Korea", "Major"),
+   catching leagues absent from the table;
+3. no flag, rather than a wrong one.
+
+Multi-country regions use a symbol instead of pretending to be one nation:
+🇪🇺 EMEA, 🌎 Americas, 🌏 Asia-Pacific, 🌍 International.
+
+**Adding or fixing a league is a one-line edit** to `LEAGUE_REGIONS` in
+`src/utils/regions.py`:
+
+```python
+"lck": "kr",
+"vct pacific": "pacific",
+```
+
 ### 🎮 Per-server game toggles
 
 `/games` shows which of the ten titles this server follows. Anyone can look;
@@ -143,6 +175,7 @@ aurorabot/
 │   └── utils/
 │       ├── games.py           # game ↔ PandaScore slug mapping
 │       ├── guildgames.py      # enforcement of the per-server toggles
+│       ├── regions.py         # region flags for leagues/events/teams
 │       ├── tiers.py           # Tier 1 (S/A grade) filtering
 │       ├── tournaments.py     # "is this tournament current?" + labels
 │       ├── matches.py         # opponent / tournament readers for payloads

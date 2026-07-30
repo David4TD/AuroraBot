@@ -25,6 +25,7 @@ from ..utils.games import resolve_slug
 from ..utils.guildgames import blocked_message
 from ..utils.matches import opponents
 from ..utils.predictions import WIN_REWARD, submit_prediction
+from ..utils.regions import event_flag
 from ..utils.tiers import filter_for
 
 log = logging.getLogger("aurorabot.cogs.predictions")
@@ -70,7 +71,12 @@ class MatchSelect(discord.ui.Select):
             label = f"{opps[0]['name']} vs {opps[1]['name']}"[:100]
             league = (m.get("league") or {}).get("name", "")
             options.append(
-                discord.SelectOption(label=label, value=str(m["id"]), description=league[:100] or None)
+                discord.SelectOption(
+                    label=label,
+                    value=str(m["id"]),
+                    description=league[:100] or None,
+                    emoji=event_flag(m),
+                )
             )
         super().__init__(placeholder="Pick a match to predict…", options=options or [
             discord.SelectOption(label="No eligible matches", value="none")
