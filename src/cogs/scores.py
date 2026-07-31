@@ -1,9 +1,13 @@
-"""Live & recent scores commands.
+"""Live & recent scores, filtered game → tournament → team.
 
-Every feed here is limited to **Tier 1** tournaments (PandaScore S- and
-A-tier by default): the API is over-fetched and then filtered client-side (see
-``utils.tiers``), because PandaScore has no server-side tier filter on the
-match endpoints.
+Each level's options are scoped by the one above it, so picking LCK narrows the
+team list to LCK's rosters. Only the game is required — and even that falls back
+to a personal `/setgame` default — so a quick "what's on in LoL" still works
+without naming a tournament.
+
+Every feed is limited to **Tier 1** tournaments (PandaScore S- and A-tier by
+default): the API is over-fetched and filtered client-side, because PandaScore
+has no server-side tier filter on the match endpoints.
 """
 from __future__ import annotations
 
@@ -14,18 +18,50 @@ from discord import app_commands
 from discord.ext import commands
 
 from ..services.pandascore import PandaScoreError
+from ..services.tourneys import match_has_team, match_in_target
 from ..utils.choices import GAME_CHOICES
 from ..utils.embeds import RED, match_embed
-from ..utils.games import ALL_GAME_KEYS, resolve_slug
+from ..utils.games import ALL_GAME_KEYS, label_for, resolve_slug
 from ..utils.guildgames import blocked_message, filter_enabled, no_games_message
+from ..utils.pickers import game_of, team_choices, tournament_choices
 from ..utils.tiers import NO_TOP_TIER_MATCHES, filter_for
 
 log = logging.getLogger("aurorabot.cogs.scores")
 
-# How many raw matches to pull before tier filtering, and how many survivors to
+# How many raw matches to pull before filtering, and how many survivors to
 # render (Discord caps a message at 10 embeds).
 FETCH_SIZE = 50
 SHOW = 5
+
+DESCRIBE = {
+    "game": "Which game. Defaults to your `/setgame` pick.",
+    "tournament": "Narrow to a league or one of its stages.",
+    "team": "Narrow to one team in that tournament.",
+}
+
+
+class Filters:
+    """The resolved game → tournament → team selection for one invocation."""
+
+    def __init__(self, game_key, enabled, target=None, team=None):
+        self.game_key = game_key
+        self.enabled = enabled
+        self.target = target
+        self.team = team
+
+    def apply(self, matches: list[dict]) -> list[dict]:
+        return [
+            m for m in matches
+            if match_in_target(m, self.target) and match_has_team(m, self.team)
+        ]
+
+    def describe(self) -> str:
+        parts = [label_for(self.game_key)] if self.game_key else []
+        if self.target:
+            parts.append(self.target["name"])
+        if self.team:
+            parts.append(self.team["name"])
+        return " · ".join(parts)
 
 
 class Scores(commands.Cog):
@@ -35,25 +71,32 @@ class Scores(commands.Cog):
     def _slug(self, game_key: str) -> str:
         return resolve_slug(game_key, self.bot.settings.cs_slug)
 
-    def _top_tier(self, matches: list[dict]) -> list[dict]:
-        return filter_for(self.bot.settings, matches)
+    async def _tournament_ac(self, interaction, current):
+        return await tournament_choices(
+            self.bot.tourneys, game_of(interaction), current
+        )
 
-    async def _gate(
-        self, interaction: discord.Interaction, game: app_commands.Choice[str] | None
-    ) -> tuple[bool, set[str], str | None]:
-        """Resolve which game to show, honouring the server's selection.
+    async def _team_ac(self, interaction, current):
+        return await team_choices(
+            self.bot.tourneys,
+            game_of(interaction),
+            getattr(interaction.namespace, "tournament", None),
+            current,
+        )
 
-        Returns ``(allowed, enabled, game_key)``. When the server follows
-        nothing, or the user named a game it doesn't follow, the caller should
-        bail out — ``_gate`` has already replied explaining why.
+    async def _resolve(
+        self,
+        interaction: discord.Interaction,
+        game: app_commands.Choice[str] | None,
+        tournament: str | None,
+        team: str | None,
+    ) -> Filters | None:
+        """Resolve the cascade, or reply explaining why it can't and return None.
 
-        With no game named, the user's `/setgame` default applies. A default
-        pointing at a game this server doesn't follow is ignored rather than
-        erroring: it's a standing preference, not something they typed just now,
-        so falling back to the server's full selection is friendlier.
+        Order matters: the server's game selection gates everything, the game
+        scopes the tournament, and the tournament scopes the team.
         """
-        # In a DM there is no server whose selection to respect, and no channel
-        # to keep tidy, so everything is available.
+        # A DM has no server selection to honour, and no channel to keep tidy.
         enabled = (
             await self.bot.db.enabled_games(interaction.guild_id)
             if interaction.guild_id
@@ -61,42 +104,77 @@ class Scores(commands.Cog):
         )
         if not enabled:
             await interaction.followup.send(no_games_message())
-            return False, enabled, None
+            return None
 
         if game is not None:
-            if game.value not in enabled:
-                await interaction.followup.send(blocked_message(game.value))
-                return False, enabled, None
-            return True, enabled, game.value
+            game_key = game.value
+            if game_key not in enabled:
+                await interaction.followup.send(blocked_message(game_key))
+                return None
+        else:
+            # `/setgame` exists to be the default here, so an explicit game is
+            # only *required* when there's no default to fall back on.
+            game_key = await self.bot.db.favorite_game(interaction.user.id)
+            if game_key is None or game_key not in enabled:
+                await interaction.followup.send(
+                    "Pick a game — or set a default once with `/setgame` and "
+                    "these commands will use it from then on."
+                )
+                return None
 
-        default = await self.bot.db.favorite_game(interaction.user.id)
-        if default and default in enabled:
-            return True, enabled, default
-        return True, enabled, None
+        target = None
+        if tournament:
+            target = await self.bot.tourneys.resolve(tournament, game_key)
+            if target is None:
+                await interaction.followup.send(
+                    f"Couldn't match **{tournament}** to a current "
+                    f"{label_for(game_key)} league or tournament. Start typing "
+                    "and pick one from the list."
+                )
+                return None
 
-    def _for_guild(self, matches: list[dict], enabled: set[str]) -> list[dict]:
-        return filter_enabled(matches, enabled, self.bot.settings.cs_slug)
+        picked = None
+        if team:
+            picked = await self.bot.tourneys.resolve_team(team, game_key, target)
+            if picked is None:
+                where = f" in {target['name']}" if target else ""
+                await interaction.followup.send(
+                    f"Couldn't find a team called **{team}**{where}."
+                )
+                return None
 
+        return Filters(game_key, enabled, target, picked)
+
+    async def _feed(self, fetch, filters: Filters) -> list[dict]:
+        raw = await fetch(slug=self._slug(filters.game_key), per_page=FETCH_SIZE)
+        matches = filter_for(self.bot.settings, raw)
+        matches = filter_enabled(matches, filters.enabled, self.bot.settings.cs_slug)
+        return filters.apply(matches)
+
+    def _empty(self, filters: Filters, what: str) -> str:
+        scope = filters.describe()
+        return f"No {what} for **{scope}** right now."
+
+    # ── commands ─────────────────────────────────────────────────────────────
     @app_commands.command(
         name="live", description="Show Tier 1 matches happening right now."
     )
-    @app_commands.describe(game="Filter by a game. Defaults to your `/setgame` pick.")
+    @app_commands.describe(**DESCRIBE)
     @app_commands.choices(game=GAME_CHOICES)
+    @app_commands.autocomplete(tournament=_tournament_ac, team=_team_ac)
     async def live(
-        self, interaction: discord.Interaction, game: app_commands.Choice[str] | None = None
+        self,
+        interaction: discord.Interaction,
+        game: app_commands.Choice[str] | None = None,
+        tournament: str | None = None,
+        team: str | None = None,
     ) -> None:
         await interaction.response.defer(thinking=True)
-        allowed, enabled, game_key = await self._gate(interaction, game)
-        if not allowed:
+        filters = await self._resolve(interaction, game, tournament, team)
+        if filters is None:
             return
-        slug = self._slug(game_key) if game_key else None
         try:
-            matches = self._for_guild(
-                self._top_tier(
-                    await self.bot.api.running_matches(slug=slug, per_page=FETCH_SIZE)
-                ),
-                enabled,
-            )
+            matches = await self._feed(self.bot.api.running_matches, filters)
         except PandaScoreError as exc:
             log.warning("live failed: %s", exc)
             await interaction.followup.send(
@@ -110,70 +188,75 @@ class Scores(commands.Cog):
 
         if not matches:
             await interaction.followup.send(
-                "No live Tier 1 matches right now. Try `/upcoming` to see what's next. 🎮"
+                f"{self._empty(filters, 'live matches')} "
+                "Try `/upcoming` to see what's next. 🎮"
             )
             return
 
-        embeds = [match_embed(m, game_key, self.bot.icons) for m in matches[:SHOW]]
+        embeds = [match_embed(m, filters.game_key, self.bot.icons) for m in matches[:SHOW]]
         await interaction.followup.send(
-            content=f"🔴 **{len(matches)} live Tier 1 match(es)**", embeds=embeds
+            content=f"🔴 **{len(matches)} live** · {filters.describe()}", embeds=embeds
         )
 
     @app_commands.command(name="upcoming", description="Show upcoming Tier 1 matches.")
-    @app_commands.describe(game="Filter by a game. Defaults to your `/setgame` pick.")
+    @app_commands.describe(**DESCRIBE)
     @app_commands.choices(game=GAME_CHOICES)
+    @app_commands.autocomplete(tournament=_tournament_ac, team=_team_ac)
     async def upcoming(
-        self, interaction: discord.Interaction, game: app_commands.Choice[str] | None = None
+        self,
+        interaction: discord.Interaction,
+        game: app_commands.Choice[str] | None = None,
+        tournament: str | None = None,
+        team: str | None = None,
     ) -> None:
         await interaction.response.defer(thinking=True)
-        allowed, enabled, game_key = await self._gate(interaction, game)
-        if not allowed:
+        filters = await self._resolve(interaction, game, tournament, team)
+        if filters is None:
             return
-        slug = self._slug(game_key) if game_key else None
         try:
-            matches = self._for_guild(
-                self._top_tier(
-                    await self.bot.api.upcoming_matches(slug=slug, per_page=FETCH_SIZE)
-                ),
-                enabled,
-            )
+            matches = await self._feed(self.bot.api.upcoming_matches, filters)
         except PandaScoreError:
             await interaction.followup.send("The scores service is unavailable right now.")
             return
         if not matches:
-            await interaction.followup.send(NO_TOP_TIER_MATCHES)
+            await interaction.followup.send(
+                self._empty(filters, "upcoming matches") + f"\n{NO_TOP_TIER_MATCHES}"
+            )
             return
-        embeds = [match_embed(m, game_key, self.bot.icons) for m in matches[:SHOW]]
-        await interaction.followup.send(content="🗓️ **Upcoming · Tier 1**", embeds=embeds)
+        embeds = [match_embed(m, filters.game_key, self.bot.icons) for m in matches[:SHOW]]
+        await interaction.followup.send(
+            content=f"🗓️ **Upcoming** · {filters.describe()}", embeds=embeds
+        )
 
     @app_commands.command(
         name="results", description="Show recent finished Tier 1 matches."
     )
-    @app_commands.describe(game="Filter by a game. Defaults to your `/setgame` pick.")
+    @app_commands.describe(**DESCRIBE)
     @app_commands.choices(game=GAME_CHOICES)
+    @app_commands.autocomplete(tournament=_tournament_ac, team=_team_ac)
     async def results(
-        self, interaction: discord.Interaction, game: app_commands.Choice[str] | None = None
+        self,
+        interaction: discord.Interaction,
+        game: app_commands.Choice[str] | None = None,
+        tournament: str | None = None,
+        team: str | None = None,
     ) -> None:
         await interaction.response.defer(thinking=True)
-        allowed, enabled, game_key = await self._gate(interaction, game)
-        if not allowed:
+        filters = await self._resolve(interaction, game, tournament, team)
+        if filters is None:
             return
-        slug = self._slug(game_key) if game_key else None
         try:
-            matches = self._for_guild(
-                self._top_tier(
-                    await self.bot.api.past_matches(slug=slug, per_page=FETCH_SIZE)
-                ),
-                enabled,
-            )
+            matches = await self._feed(self.bot.api.past_matches, filters)
         except PandaScoreError:
             await interaction.followup.send("The scores service is unavailable right now.")
             return
         if not matches:
-            await interaction.followup.send(NO_TOP_TIER_MATCHES)
+            await interaction.followup.send(self._empty(filters, "recent results"))
             return
-        embeds = [match_embed(m, game_key, self.bot.icons) for m in matches[:SHOW]]
-        await interaction.followup.send(content="✅ **Recent results · Tier 1**", embeds=embeds)
+        embeds = [match_embed(m, filters.game_key, self.bot.icons) for m in matches[:SHOW]]
+        await interaction.followup.send(
+            content=f"✅ **Recent results** · {filters.describe()}", embeds=embeds
+        )
 
 
 async def setup(bot: commands.Bot) -> None:

@@ -21,8 +21,10 @@ from discord.ext import tasks
 from ..services.pandascore import PandaScoreError
 from ..utils.choices import GAME_CHOICES
 from ..utils.embeds import BRAND
-from ..utils.games import ALL_GAME_KEYS, resolve_slug
+from ..utils.games import ALL_GAME_KEYS, label_for, resolve_slug
+from ..services.tourneys import match_has_team, match_in_target
 from ..utils.guildgames import blocked_message, no_games_message
+from ..utils.pickers import game_of, team_choices, tournament_choices
 from ..utils.matches import opponents
 from ..utils.predictions import WIN_REWARD, submit_prediction
 from ..utils.regions import event_flag
@@ -120,15 +122,35 @@ class Predictions(commands.Cog):
     async def cog_unload(self) -> None:
         self.resolve_loop.cancel()
 
+    async def _tournament_ac(self, interaction, current):
+        return await tournament_choices(
+            self.bot.tourneys, game_of(interaction), current
+        )
+
+    async def _team_ac(self, interaction, current):
+        return await team_choices(
+            self.bot.tourneys,
+            game_of(interaction),
+            getattr(interaction.namespace, "tournament", None),
+            current,
+        )
+
     @app_commands.command(
         name="predict", description="Predict the winner of an upcoming Tier 1 match."
     )
-    @app_commands.describe(game="Game to predict. Defaults to your `/setgame` pick.")
+    @app_commands.describe(
+        game="Game to predict. Defaults to your `/setgame` pick.",
+        tournament="Narrow to a league or one of its stages.",
+        team="Narrow to one team in that tournament.",
+    )
     @app_commands.choices(game=GAME_CHOICES)
+    @app_commands.autocomplete(tournament=_tournament_ac, team=_team_ac)
     async def predict(
         self,
         interaction: discord.Interaction,
         game: app_commands.Choice[str] | None = None,
+        tournament: str | None = None,
+        team: str | None = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         enabled = (
@@ -165,10 +187,39 @@ class Predictions(commands.Cog):
             await interaction.followup.send("Predictions are unavailable right now.", ephemeral=True)
             return
         matches = filter_for(self.bot.settings, matches)
+
+        # Same cascade as the browse commands: tournament narrows the match
+        # list, team narrows it further.
+        target = None
+        if tournament:
+            target = await self.bot.tourneys.resolve(tournament, game_key)
+            if target is None:
+                await interaction.followup.send(
+                    f"Couldn't match **{tournament}** to a current "
+                    f"{label_for(game_key)} league or tournament.", ephemeral=True
+                )
+                return
+            matches = [m for m in matches if match_in_target(m, target)]
+
+        picked = None
+        if team:
+            picked = await self.bot.tourneys.resolve_team(team, game_key, target)
+            if picked is None:
+                await interaction.followup.send(
+                    f"Couldn't find a team called **{team}**.", ephemeral=True
+                )
+                return
+            matches = [m for m in matches if match_has_team(m, picked)]
+
         eligible = [m for m in matches if len(opponents(m)) >= 2]
         if not eligible:
+            scope = " · ".join(
+                x for x in (label_for(game_key),
+                            target["name"] if target else None,
+                            picked["name"] if picked else None) if x
+            )
             await interaction.followup.send(
-                "No upcoming Tier 1 matches with confirmed teams to predict yet.",
+                f"No upcoming Tier 1 matches with confirmed teams for **{scope}**.",
                 ephemeral=True,
             )
             return

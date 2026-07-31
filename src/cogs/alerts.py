@@ -30,43 +30,36 @@ from ..utils.matches import league_id, opponents, team_ids, tournament_id
 from ..utils.predictions import Outcome, submit_prediction
 from ..utils.regions import event_flag, region_flag
 from ..utils.tiers import filter_for
-from ..utils.tournaments import current_tournaments, parse_dt, tournament_label
+from ..utils.pickers import game_of, tournament_choices
+from ..utils.tournaments import parse_dt
 
 log = logging.getLogger("aurorabot.cogs.alerts")
 
 # Reaction → which of the two teams the user is backing.
 PICK_EMOJI = ("1️⃣", "2️⃣")
 
-# Autocomplete must answer inside 3 seconds, so it can never afford a live API
-# call. The cache TTL is deliberately long — current tournaments change on the
-# order of days, not minutes — and a background loop refreshes it well before it
-# expires, so in practice the autocomplete is always served warm.
-TOURNAMENT_CACHE_SECONDS = 30 * 60
+# The tournament directory refreshes on a shorter period than its own TTL,
+# so the autocomplete is always served warm.
 WARM_EVERY_MINUTES = 10
 
 FETCH_SIZE = 50
 PRUNE_AFTER_DAYS = 3
 
-# Autocomplete values are prefixed so a league and a tournament id can't be
-# confused for one another.
-LEAGUE_PREFIX = "L:"
-TOURNAMENT_PREFIX = "T:"
+# Value prefixes and the autocomplete deadline now live with the shared
+# tournament directory, re-exported here so existing importers keep working.
+from ..services.tourneys import (  # noqa: E402  (grouped with the constants)
+    AUTOCOMPLETE_BUDGET,
+    LEAGUE_PREFIX,
+    LOADING_SENTINEL,
+    TOURNAMENT_PREFIX,
+)
 
-# Discord discards an autocomplete response after 3 seconds and shows
-# "loading options failed", so give up well before that and offer a
-# placeholder instead. The fetch keeps warming in the background.
-AUTOCOMPLETE_BUDGET = 2.0
-LOADING_SENTINEL = "__loading__"
 PRUNE_EVERY_POLLS = 60  # ~hourly at the default 60s poll interval
 
 
 class Alerts(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        # game key → (fetched_at, tournaments)
-        self._tournament_cache: dict[str, tuple[datetime, list[dict]]] = {}
-        # game key → in-flight refresh, so concurrent keystrokes share one fetch
-        self._warming: dict[str, asyncio.Task] = {}
         self._polls = 0
 
     async def cog_load(self) -> None:
@@ -77,28 +70,6 @@ class Alerts(commands.Cog):
     async def cog_unload(self) -> None:
         self.poll_loop.cancel()
         self.warm_loop.cancel()
-        for task in self._warming.values():
-            task.cancel()
-        self._warming.clear()
-
-    # ── cache pre-warming ────────────────────────────────────────────────────
-    def prewarm(self, game_keys: set[str]) -> None:
-        """Start warming the tournament cache for these games, without waiting.
-
-        Called on startup and whenever /games changes, so the first
-        `/alerts add` autocomplete is served from cache rather than racing
-        Discord's 3-second deadline.
-        """
-        for key in game_keys:
-            task = self._warming.get(key)
-            if task is not None and not task.done():
-                continue
-            cached = self._tournament_cache.get(key)
-            if cached and (
-                datetime.now(timezone.utc) - cached[0]
-            ).total_seconds() < TOURNAMENT_CACHE_SECONDS / 2:
-                continue        # still comfortably fresh
-            self._warming[key] = asyncio.create_task(self._refresh_tournaments(key))
 
     @tasks.loop(minutes=WARM_EVERY_MINUTES)
     async def warm_loop(self) -> None:
@@ -112,7 +83,7 @@ class Alerts(commands.Cog):
         try:
             games = await self.bot.db.distinct_enabled_games()
             if games:
-                self.prewarm(games)
+                self.bot.tourneys.prewarm(games)
         except Exception:  # noqa: BLE001 - keep the loop alive
             log.exception("tournament pre-warm failed")
 
@@ -126,59 +97,6 @@ class Alerts(commands.Cog):
     def _top_tier(self, items: list[dict]) -> list[dict]:
         return filter_for(self.bot.settings, items)
 
-    # ── tournament lookup ────────────────────────────────────────────────────
-    async def _refresh_tournaments(self, game_key: str) -> list[dict]:
-        """Fetch and cache a game's current Tier 1 tournaments.
-
-        Both feeds are fetched concurrently: sequentially they cost two full
-        round trips, which alone can blow Discord's 3-second autocomplete
-        deadline on a cold cache.
-        """
-        slug = self._slug(game_key)
-        try:
-            running, upcoming = await asyncio.gather(
-                self.bot.api.running_tournaments(slug=slug, per_page=FETCH_SIZE),
-                self.bot.api.upcoming_tournaments(slug=slug, per_page=FETCH_SIZE),
-            )
-        except PandaScoreError as exc:
-            log.warning("tournament lookup failed for %s: %s", game_key, exc)
-            cached = self._tournament_cache.get(game_key)
-            return cached[1] if cached else []
-
-        tournaments = current_tournaments(self._top_tier(running + upcoming))
-        self._tournament_cache[game_key] = (datetime.now(timezone.utc), tournaments)
-        return tournaments
-
-    async def _current_tournaments(
-        self, game_key: str, *, wait: float | None = None
-    ) -> list[dict] | None:
-        """Current Tier 1 tournaments for a game, cached briefly.
-
-        With *wait* set, give up after that many seconds and return ``None``
-        meaning "not ready yet" — distinct from an empty list, which means
-        "fetched, nothing on". Autocomplete uses this so a slow first call
-        shows a placeholder instead of Discord's "loading options failed".
-
-        The in-flight fetch is shared and shielded, so several keystrokes cause
-        one request, and a caller giving up doesn't cancel the warm-up.
-        """
-        cached = self._tournament_cache.get(game_key)
-        now = datetime.now(timezone.utc)
-        if cached and (now - cached[0]).total_seconds() < TOURNAMENT_CACHE_SECONDS:
-            return cached[1]
-
-        task = self._warming.get(game_key)
-        if task is None or task.done():
-            task = asyncio.create_task(self._refresh_tournaments(game_key))
-            self._warming[game_key] = task
-
-        if wait is None:
-            return await task
-        try:
-            return await asyncio.wait_for(asyncio.shield(task), timeout=wait)
-        except (asyncio.TimeoutError, PandaScoreError):
-            return cached[1] if cached else None
-
     # ── slash command group ──────────────────────────────────────────────────
     alerts = app_commands.Group(
         name="alerts",
@@ -190,79 +108,9 @@ class Alerts(commands.Cog):
     async def _tournament_autocomplete(
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
-        """Offer whole leagues first, then the individual stages within them.
-
-        A league's stages are separate PandaScore tournaments and often run in
-        parallel — LCK splits into a Legend Group and a Rise Group — so picking
-        one stage silently misses the others. The league entry covers all of
-        them; the stage entries stay available for narrower subscriptions.
-
-        The league list is derived from the tournaments already fetched, so this
-        costs no extra API call.
-        """
-        game = getattr(interaction.namespace, "game", None)
-        if not game:
-            return []
-
-        tournaments = await self._current_tournaments(
-            game, wait=AUTOCOMPLETE_BUDGET
+        return await tournament_choices(
+            self.bot.tourneys, game_of(interaction), current
         )
-        if tournaments is None:
-            # First use after a restart: the PandaScore round trip (plus TLS
-            # setup) can outlast Discord's deadline. Say so rather than
-            # failing; the background fetch makes the next keystroke instant.
-            return [
-                app_commands.Choice(
-                    name="⏳ Loading tournaments… type another character",
-                    value=LOADING_SENTINEL,
-                )
-            ]
-
-        query = (current or "").strip().lower()
-
-        # Distinct leagues, in first-seen order, with how many stages each has.
-        leagues: dict[int, dict] = {}
-        for t in tournaments:
-            lg = t.get("league") or {}
-            if not lg.get("id"):
-                continue
-            entry = leagues.setdefault(
-                int(lg["id"]), {"name": lg.get("name") or "League", "stages": 0}
-            )
-            entry["stages"] += 1
-
-        choices: list[app_commands.Choice[str]] = []
-
-        for lid, info in leagues.items():
-            name = info["name"]
-            if query and query not in name.lower():
-                continue
-            flag = region_flag(name) or ""
-            suffix = (
-                f" — all {info['stages']} stages" if info["stages"] > 1
-                else " — whole league"
-            )
-            display = f"{flag} {name}{suffix}".strip()
-            choices.append(
-                app_commands.Choice(name=display[:100], value=f"{LEAGUE_PREFIX}{lid}")
-            )
-            if len(choices) == 25:
-                return choices
-
-        for t in tournaments:
-            label = tournament_label(t)
-            if query and query not in label.lower():
-                continue
-            flag = event_flag(t)
-            display = f"↳ {flag} {label}" if flag else f"↳ {label}"
-            choices.append(
-                app_commands.Choice(
-                    name=display[:100], value=f"{TOURNAMENT_PREFIX}{t['id']}"
-                )
-            )
-            if len(choices) == 25:
-                break
-        return choices
 
     @alerts.command(
         name="add",
@@ -312,7 +160,7 @@ class Alerts(commands.Cog):
             scope, team_id, team_name = "team", resolved["id"], resolved["name"]
 
         elif tournament:
-            resolved = await self._resolve_target(tournament, game.value)
+            resolved = await self.bot.tourneys.resolve(tournament, game.value)
             if resolved is None:
                 await interaction.followup.send(
                     f"Couldn't match **{tournament}** to a current {game.name} league "
@@ -378,76 +226,6 @@ class Alerts(commands.Cog):
             return None
         best = rank_by_name(results, query)[0]  # exact name wins over partials
         return {"id": int(best["id"]), "name": best.get("name", "Team")}
-
-    async def _resolve_target(self, value: str, game_key: str) -> dict | None:
-        """Resolve an autocomplete value — or a typed name — to a league/tournament.
-
-        Autocomplete sends ``L:<id>`` or ``T:<id>``. A hand-typed name falls back
-        to matching league names first (the more useful default), then stages.
-        """
-        value = value.strip()
-        if value == LOADING_SENTINEL:
-            return None
-
-        tournaments = await self._current_tournaments(game_key) or []
-
-        if value.startswith(LEAGUE_PREFIX):
-            wanted = value[len(LEAGUE_PREFIX):]
-            if not wanted.isdigit():
-                return None
-            wanted = int(wanted)
-            for t in tournaments:
-                lg = t.get("league") or {}
-                if lg.get("id") and int(lg["id"]) == wanted:
-                    return {
-                        "scope": "league",
-                        "id": wanted,
-                        "name": lg.get("name") or "League",
-                    }
-            return None
-
-        if value.startswith(TOURNAMENT_PREFIX):
-            value = value[len(TOURNAMENT_PREFIX):]
-
-        if value.isdigit():
-            wanted = int(value)
-            for t in tournaments:
-                if int(t["id"]) == wanted:
-                    return {
-                        "scope": "tournament",
-                        "id": wanted,
-                        "name": tournament_label(t),
-                    }
-            # Typed or stale id: confirm it exists before storing it.
-            try:
-                fetched = await self.bot.api.get_tournament(wanted)
-            except PandaScoreError:
-                return None
-            if fetched.get("id"):
-                return {
-                    "scope": "tournament",
-                    "id": wanted,
-                    "name": tournament_label(fetched),
-                }
-            return None
-
-        query = value.lower()
-        for t in tournaments:                      # league names take priority
-            lg = t.get("league") or {}
-            if lg.get("id") and query in str(lg.get("name") or "").lower():
-                return {
-                    "scope": "league",
-                    "id": int(lg["id"]),
-                    "name": lg.get("name") or "League",
-                }
-        for t in tournaments:
-            if query in tournament_label(t).lower():
-                return {
-                    "scope": "tournament",
-                    "id": int(t["id"]),
-                    "name": tournament_label(t),
-                }
-        return None
 
     @alerts.command(name="list", description="List this server's alert subscriptions.")
     async def list_subs(self, interaction: discord.Interaction) -> None:

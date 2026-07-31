@@ -16,7 +16,7 @@ Built with **discord.py 2.x**, containerised for one-click **Unraid** deployment
 
 | Area | Commands |
 |------|----------|
-| **Live scores** | `/live`, `/upcoming`, `/results` |
+| **Live scores** | `/live`, `/upcoming`, `/results` — filter game → tournament → team |
 | **Standings** | `/standings <league>` — current splits only |
 | **Analytics** | `/team <name>` — form, win rate, roster, deep-stats links |
 | **Profile** | `/profile`, `/follow`, `/unfollow`, `/setgame` |
@@ -27,6 +27,29 @@ Built with **discord.py 2.x**, containerised for one-click **Unraid** deployment
 | **Meta** | `/help`, `/ping` |
 
 ---
+
+## 🔎 Filtering
+
+`/live`, `/upcoming`, `/results` and `/predict` share one cascade, each level's
+options scoped by the one above it:
+
+```
+/live game:LoL                            all Tier 1 LoL
+/live game:LoL tournament:LCK             that league, all its stages
+/live game:LoL tournament:LCK team:T1     one team in it
+```
+
+Only the game is needed — and `/setgame` supplies it if you've set a default, so
+a bare `/live` still works. Tournament and team narrow rather than block.
+
+The tournament picker lists **whole leagues first**, then their stages indented
+beneath, because a league's stages are separate tournaments that often run in
+parallel (LCK splits into a Legend Group and a Rise Group). The team picker then
+offers only that tournament's roster.
+
+Rosters ride along on the tournament payload, so the whole cascade costs the same
+two API calls per game that the tournament list already cost — no extra request
+per level, and the cache is shared with `/alerts add`.
 
 ## 🔔 Alerts
 
@@ -102,8 +125,11 @@ Icons **warm up**: the first view of a new league is mostly plain and fills in
 over a few seconds. That's expected, not a fault — rendering never waits on the
 network. Anything that fails falls back to plain text.
 
-PandaScore exposes no region field, so event flags come from a table in
-`src/utils/regions.py`. Fixing or adding a league is a one-line edit:
+PandaScore exposes no region field on *leagues*, so event flags come from a
+table in `src/utils/regions.py`. (Tournaments do carry `region`, but only as
+coarse codes like `WEU`, and their `country` is the venue — VCT EMEA played in
+Berlin reports `DE` — so neither is a safe source for a league's flag.) Fixing
+or adding a league is a one-line edit:
 
 ```python
 "lck": "kr",

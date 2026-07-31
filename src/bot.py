@@ -21,6 +21,7 @@ from .database.db import Database
 from .services.emojis import TeamIconStore
 from .services.health import HealthServer, HealthState
 from .services.pandascore import PandaScoreClient
+from .services.tourneys import TournamentDirectory
 
 COGS = [
     "src.cogs.meta",
@@ -72,6 +73,9 @@ class AuroraBot(commands.Bot):
             self, self.db, cache_dir=settings.data_dir / "logos"
         )
         self._icons_started = False
+        # Shared by /alerts, /live, /upcoming, /results and /predict, so the
+        # cascade's warm-up is paid once rather than per cog.
+        self.tourneys = TournamentDirectory(self)
         self.log = logging.getLogger("aurorabot")
 
     async def setup_hook(self) -> None:
@@ -133,9 +137,8 @@ class AuroraBot(commands.Bot):
             # has run /games.
             try:
                 games = await self.db.distinct_enabled_games()
-                alerts = self.get_cog("Alerts")
-                if games and alerts is not None:
-                    alerts.prewarm(games)
+                if games:
+                    self.tourneys.prewarm(games)
                     self.log.info("Pre-warming tournaments for %s", ", ".join(sorted(games)))
                 else:
                     self.log.info(
@@ -155,6 +158,7 @@ class AuroraBot(commands.Bot):
         self.log.info("Shutting down…")
         self.health.ready = False
         try:
+            self.tourneys.cancel()
             await self.icons.close()
             await self.api.close()
             await self.db.close()
