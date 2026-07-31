@@ -34,6 +34,7 @@ COGS = [
     "src.cogs.leaderboard",
     "src.cogs.alerts",
     "src.cogs.digest",
+    "src.cogs.lineups",
 ]
 
 

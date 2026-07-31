@@ -38,6 +38,16 @@ log = logging.getLogger("aurorabot.tourneys")
 CACHE_SECONDS = 30 * 60
 FETCH_SIZE = 50
 
+# Rosters change between splits, not between matches, so they can be held far
+# longer than the tournament list.
+ROSTER_CACHE_SECONDS = 6 * 60 * 60
+
+# Canonical lane order, so both sides of a lineup card line up row for row.
+# Games without roles fall through to 99 and sort by name.
+ROLE_ORDER = {"top": 0, "jungle": 1, "mid": 2, "adc": 3, "support": 4}
+ROLE_LABEL = {"top": "Top", "jungle": "Jungle", "mid": "Mid",
+              "adc": "Bot", "support": "Support"}
+
 # Values are prefixed so a league id can never be mistaken for a tournament id.
 LEAGUE_PREFIX = "L:"
 TOURNAMENT_PREFIX = "T:"
@@ -54,6 +64,7 @@ class TournamentDirectory:
         self.bot = bot
         self._cache: dict[str, tuple[datetime, list[dict]]] = {}
         self._warming: dict[str, asyncio.Task] = {}
+        self._rosters: dict[int, tuple[datetime, list[dict]]] = {}
 
     # ── fetching ─────────────────────────────────────────────────────────────
     async def refresh(self, game_key: str) -> list[dict]:
@@ -207,6 +218,47 @@ class TournamentDirectory:
             if query in team["name"].lower():
                 return team
         return None
+
+    # ── rosters ──────────────────────────────────────────────────────────────
+    async def roster(self, team_id: int) -> list[dict]:
+        """A team's current players, from ``/teams/{id}``.
+
+        The tournament feed's ``teams`` block carries only id/name/logo, so the
+        player list needs its own call — cached, because a lineup card asks for
+        two teams and the same teams recur across a tournament's matches.
+
+        PandaScore has no confirmed per-match lineup on this plan
+        (``expected_roster`` comes back empty), so this is the team's *current*
+        roster, including substitutes. Callers should say so.
+        """
+        cached = self._rosters.get(team_id)
+        if cached and (
+            datetime.now(timezone.utc) - cached[0]
+        ).total_seconds() < ROSTER_CACHE_SECONDS:
+            return cached[1]
+
+        try:
+            team = await self.bot.api.get_team(team_id)
+        except PandaScoreError as exc:
+            log.warning("roster lookup failed for team %s: %s", team_id, exc)
+            return cached[1] if cached else []
+
+        players = [
+            {
+                "id": p.get("id"),
+                "name": p.get("name") or "?",
+                "role": (p.get("role") or "").lower() or None,
+                "nationality": p.get("nationality"),
+                "first_name": p.get("first_name"),
+                "last_name": p.get("last_name"),
+                "age": p.get("age"),
+            }
+            for p in (team.get("players") or [])
+            if p.get("active", True)
+        ]
+        players.sort(key=lambda p: (ROLE_ORDER.get(p["role"], 99), p["name"].lower()))
+        self._rosters[team_id] = (datetime.now(timezone.utc), players)
+        return players
 
     # ── derived views ────────────────────────────────────────────────────────
     async def teams(self, game_key: str, target: dict | None) -> list[dict]:

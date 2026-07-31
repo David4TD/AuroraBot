@@ -19,6 +19,7 @@ Built with **discord.py 2.x**, containerised for one-click **Unraid** deployment
 | **Live scores** | `/live`, `/upcoming`, `/results` — filter game → tournament → team |
 | **Standings** | `/standings <league>` — current splits only |
 | **Analytics** | `/team <name>` — form, win rate, roster, deep-stats links |
+| **Lineups** | `/lineup` — who's playing an upcoming match, by role |
 | **Profile** | `/profile`, `/follow`, `/unfollow`, `/setgame` |
 | **Predictions** | `/predict`, `/mypredictions`, `/leaderboard` |
 | **Alerts** | `/alerts add`, `/alerts list`, `/alerts remove` |
@@ -118,6 +119,22 @@ widen, or `TOP_TIER_ONLY=false` to disable filtering.
 
 If a feed looks empty, that's usually the filter working — `/standings` names
 what it filtered out and at what grade.
+
+## 🧑‍🤝‍🧑 Lineup cards
+
+`/lineup` picks an upcoming match — game → tournament → team, same cascade as
+everything else — and prints both sides as two columns, one row per lane, so
+they read across: Top opposite Top, Support opposite Support.
+
+Two honest limits:
+
+- **These are current rosters, not confirmed starters.** PandaScore only
+  publishes a per-match lineup through `expected_roster`, which is empty on this
+  plan, so a team carrying a substitute shows it on a *Bench* line rather than
+  guessing who starts. The card's footer says as much.
+- **No player photos.** Discord renders images inline only as custom emoji, and
+  one per player would exhaust the same 2000-emoji budget the team crests use.
+  Nationality flags carry most of that information for none of the cost.
 
 ## 🏳️ Flags and logos
 
