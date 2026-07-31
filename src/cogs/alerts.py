@@ -4,7 +4,7 @@ A background loop polls PandaScore for running + upcoming Tier 1 matches and
 posts to every subscribed channel:
 
 * a **reminder** ``ALERT_LEAD_MINUTES`` (default 30) before kick-off, carrying
-  1️⃣/2️⃣ reactions so anyone can predict the winner without a slash command;
+  a button per team so anyone can predict the winner without a slash command;
 * a **live** alert the moment the match goes live.
 
 Both are deduplicated per (match, state, channel) via ``alerted_matches``, so a
@@ -27,16 +27,13 @@ from ..utils.embeds import BRAND, GREEN, match_embed
 from ..utils.games import label_for, rank_by_name, resolve_slug
 from ..utils.guildgames import blocked_message
 from ..utils.matches import league_id, opponents, team_ids, tournament_id
-from ..utils.predictions import Outcome, submit_prediction
+from ..utils.predictions import submit_prediction
 from ..utils.regions import event_flag, region_flag
 from ..utils.tiers import filter_for
 from ..utils.pickers import game_of, tournament_choices
 from ..utils.tournaments import parse_dt
 
 log = logging.getLogger("aurorabot.cogs.alerts")
-
-# Reaction → which of the two teams the user is backing.
-PICK_EMOJI = ("1️⃣", "2️⃣")
 
 # The tournament directory refreshes on a shorter period than its own TTL,
 # so the autocomplete is always served warm.
@@ -55,6 +52,67 @@ from ..services.tourneys import (  # noqa: E402  (grouped with the constants)
 )
 
 PRUNE_EVERY_POLLS = 60  # ~hourly at the default 60s poll interval
+
+
+class VoteButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"aurora:vote:(?P<side>[01])",
+):
+    """One team's button on a match reminder.
+
+    Persistent by construction: the item is rebuilt from its ``custom_id`` on
+    every click, so reminders keep working across restarts without any view
+    being re-registered. Only the *side* (0 or 1) is encoded — the match and its
+    two teams are read back from ``alert_messages`` using the message the button
+    is attached to, which keeps the custom_id short and the teams authoritative.
+
+    Replies are **ephemeral**: only the person who clicked sees the outcome, so
+    voting neither clutters the channel nor needs a DM.
+    """
+
+    def __init__(self, side: int, label: str = "…", emoji=None) -> None:
+        self.side = side
+        super().__init__(
+            discord.ui.Button(
+                label=label[:80],
+                style=discord.ButtonStyle.primary,
+                custom_id=f"aurora:vote:{side}",
+                emoji=emoji,
+            )
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        return cls(int(match["side"]))
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        db = interaction.client.db
+        row = await db.get_alert_message(interaction.message.id)
+        if row is None:
+            # The row is written just after the message is sent, so a click in
+            # that window finds nothing. Also covers a pruned old reminder.
+            await interaction.response.send_message(
+                "That match isn't open for predictions any more.", ephemeral=True
+            )
+            return
+
+        picks = [
+            {"id": int(row["team_a_id"]), "name": row["team_a_name"]},
+            {"id": int(row["team_b_id"]), "name": row["team_b_name"]},
+        ]
+        team, opponent = picks[self.side], picks[1 - self.side]
+
+        _, message = await submit_prediction(
+            db,
+            user_id=interaction.user.id,
+            display_name=interaction.user.display_name,
+            match_id=int(row["match_id"]),
+            game=row["game"],
+            team=team,
+            opponent=opponent,
+            begin_at=row["begin_at"],
+        )
+        await interaction.response.send_message(message, ephemeral=True)
 
 
 class Alerts(commands.Cog):
@@ -387,16 +445,23 @@ class Alerts(commands.Cog):
             lead = self.bot.settings.alert_lead_minutes
             content = f"⏰ **Starting in ~{lead} minutes!**"
             if predictable:
-                content += (
-                    f"\n🎲 React {PICK_EMOJI[0]} for **{teams[0]['name']}** or "
-                    f"{PICK_EMOJI[1]} for **{teams[1]['name']}** to predict the winner."
-                )
+                content += "\n🎲 Pick the winner below — only you see the result."
         else:
             content = "🔴 **A match just went live!**"
 
+        view = None
+        if predictable:
+            view = discord.ui.View(timeout=None)
+            for side, team in enumerate(teams[:2]):
+                view.add_item(
+                    VoteButton(side, team["name"], self.bot.icons.partial(team))
+                )
+
         try:
             message = await channel.send(
-                content=content, embed=match_embed(match, sub["game"], self.bot.icons)
+                content=content,
+                embed=match_embed(match, sub["game"], self.bot.icons),
+                view=view,
             )
         except discord.Forbidden:
             log.warning("Missing permission to post in channel %s", channel_id)
@@ -405,16 +470,22 @@ class Alerts(commands.Cog):
             log.warning("Failed to post alert: %s", exc)
             return
 
-        # Mark first: a failure while adding reactions must not cause a repost.
+        # Mark first: a later failure must not cause a repost.
         await self.bot.db.mark_alerted(match_id, state, channel_id)
 
-        # Reminders double as a prediction poll — reacting picks a winner.
+        # Reminders double as a prediction poll — the buttons pick a winner.
         if predictable:
-            await self._attach_prediction_reactions(message, match, teams, sub["game"])
+            await self._attach_vote_buttons(message, match, teams, sub["game"])
 
-    async def _attach_prediction_reactions(
+    async def _attach_vote_buttons(
         self, message: discord.Message, match: dict, teams: list[dict], game_key: str
     ) -> None:
+        """Record which match a reminder announced, so its buttons can resolve.
+
+        The row is written after sending because it's keyed by message id.
+        A click in the intervening milliseconds is handled by the button,
+        which asks the user to try again rather than erroring.
+        """
         await self.bot.db.record_alert_message(
             message_id=message.id,
             channel_id=message.channel.id,
@@ -425,89 +496,10 @@ class Alerts(commands.Cog):
             team_b=(teams[1]["id"], teams[1]["name"]),
             begin_at=match.get("begin_at"),
         )
-        try:
-            for emoji in PICK_EMOJI:
-                await message.add_reaction(emoji)
-        except discord.Forbidden:
-            log.warning(
-                "Can't add prediction reactions in channel %s (missing permission)",
-                message.channel.id,
-            )
-        except discord.HTTPException as exc:
-            log.warning("Failed to add prediction reactions: %s", exc)
 
     @poll_loop.before_loop
     async def _before(self) -> None:
         await self.bot.wait_until_ready()
-
-    # ── reaction predictions ─────────────────────────────────────────────────
-    @commands.Cog.listener()
-    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
-        """Turn a 1️⃣ / 2️⃣ reaction on a match reminder into a prediction.
-
-        Raw events are used deliberately: they fire for messages posted before
-        the current process started, so predictions keep working across
-        restarts without re-hydrating any views.
-        """
-        if payload.user_id == (self.bot.user.id if self.bot.user else 0):
-            return
-        emoji = str(payload.emoji)
-        if emoji not in PICK_EMOJI:
-            return
-
-        record = await self.bot.db.get_alert_message(payload.message_id)
-        if record is None:
-            return
-
-        index = PICK_EMOJI.index(emoji)
-        picks = [
-            {"id": int(record["team_a_id"]), "name": record["team_a_name"]},
-            {"id": int(record["team_b_id"]), "name": record["team_b_name"]},
-        ]
-        team, opponent = picks[index], picks[1 - index]
-
-        member = payload.member
-        display_name = member.display_name if member else f"User {payload.user_id}"
-
-        outcome, message = await submit_prediction(
-            self.bot.db,
-            user_id=payload.user_id,
-            display_name=display_name,
-            match_id=int(record["match_id"]),
-            game=record["game"],
-            team=team,
-            opponent=opponent,
-            begin_at=record["begin_at"],
-        )
-        if outcome is Outcome.UNCHANGED:
-            return  # nothing happened; don't spam a confirmation
-
-        await self._confirm_privately(payload, message)
-
-    async def _confirm_privately(
-        self, payload: discord.RawReactionActionEvent, text: str
-    ) -> None:
-        """DM the reacting user; fall back to a short-lived channel message.
-
-        A reaction has no interaction token, so there's no ephemeral reply
-        available — DM first so the channel stays clean.
-        """
-        user = payload.member or self.bot.get_user(payload.user_id)
-        if user is not None:
-            try:
-                await user.send(text)
-                return
-            except (discord.Forbidden, discord.HTTPException):
-                pass  # DMs closed — fall through to the channel
-
-        channel = self.bot.get_channel(payload.channel_id)
-        if channel is None:
-            return
-        try:
-            await channel.send(f"<@{payload.user_id}> {text}", delete_after=20)
-        except discord.HTTPException:
-            log.debug("Could not confirm prediction for user %s", payload.user_id)
-
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(Alerts(bot))

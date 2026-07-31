@@ -87,12 +87,13 @@ class AuroraBot(commands.Bot):
             await self.load_extension(ext)
             self.log.info("Loaded %s", ext)
 
-        # Route interactions from digest dropdowns posted by earlier runs. The
-        # item rebuilds itself from its custom_id, so no per-message view has to
-        # be re-registered.
+        # Route interactions from components posted by earlier runs — digest
+        # dropdowns and match-reminder vote buttons. Each item rebuilds itself
+        # from its custom_id, so no per-message view has to be re-registered.
+        from .cogs.alerts import VoteButton
         from .cogs.digest import DigestSelect
 
-        self.add_dynamic_items(DigestSelect)
+        self.add_dynamic_items(DigestSelect, VoteButton)
 
         # Command sync: instant per-guild in dev, global otherwise.
         #

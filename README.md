@@ -68,9 +68,12 @@ splits into a Legend Group and a Rise Group — so picking one stage would miss 
 other. Pick `LCK` to follow everything, or a `↳` entry for a single stage.
 
 Each subscribed match produces two pings: a **reminder** 30 minutes before
-kick-off (`ALERT_LEAD_MINUTES`) and a **live** alert at kick-off. React 1️⃣ / 2️⃣
-on the reminder to predict a winner — you can switch until kick-off, then it
-locks. Confirmation arrives by DM.
+kick-off (`ALERT_LEAD_MINUTES`) and a **live** alert at kick-off. The reminder
+carries a **button per team** — click one to predict the winner. The reply is
+ephemeral, so only you see it: no DMs, and no extra messages in the channel. You
+can switch until kick-off, then the pick locks.
+
+Buttons are persistent, so reminders posted before a restart keep working.
 
 ## 📅 Daily schedule
 
@@ -145,8 +148,8 @@ Analytics embeds link out to [gol.gg](https://gol.gg) (LoL),
 
 1. **Discord bot token** — [Developer Portal](https://discord.com/developers/applications)
    → your app → Bot. No privileged intents needed. Invite with the
-   `applications.commands` and `bot` scopes, plus *Send Messages*, *Embed Links*
-   and *Add Reactions*.
+   `applications.commands` and `bot` scopes, plus *Send Messages* and
+   *Embed Links*.
 2. **PandaScore API key** — from the [pandascore.co](https://pandascore.co) dashboard.
 
 ## 💻 Local development

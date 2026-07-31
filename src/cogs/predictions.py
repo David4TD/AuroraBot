@@ -4,7 +4,7 @@ Two ways in, both funnelling through ``utils.predictions.submit_prediction``:
 
   /predict game:<game>  → dropdown of upcoming Tier 1 matches
                         → two buttons (the two teams)
-  reacting 1️⃣ / 2️⃣ to a match reminder alert (see cogs/alerts.py)
+  clicking a team button on a match reminder (see cogs/alerts.py)
 
 A background task resolves open predictions once the match finishes and awards
 points to correct predictors.

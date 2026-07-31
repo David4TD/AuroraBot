@@ -43,7 +43,7 @@ class Meta(commands.Cog):
         embed.add_field(
             name="🎲 Play",
             value="`/predict` · `/mypredictions` · `/leaderboard`\n"
-            "Or just react 1️⃣ / 2️⃣ on a match reminder to pick a winner.",
+            "Or just click a team button on a match reminder to pick a winner.",
             inline=False,
         )
         embed.add_field(
