@@ -14,7 +14,7 @@ filtered out rather than padding the dropdown.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import discord
 from discord import app_commands
@@ -62,7 +62,10 @@ async def _show_tournaments(
     # filters are applied separately so the "nothing found" message can say
     # which one emptied the list.
     settings = cog.bot.settings
-    live = current_tournaments(tournaments)
+    # No lookahead here: a standings table only exists once matches have been
+    # played, so a split starting next month would render an empty grid. The
+    # alert pickers deliberately look further ahead; this does not.
+    live = current_tournaments(tournaments, lookahead=timedelta(0))
     eligible = filter_for(settings, live)
 
     log.debug(

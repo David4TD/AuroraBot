@@ -9,9 +9,16 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-# Grace either side of the published window: PandaScore's end_at is often the
-# scheduled finish, and a split that starts tomorrow is still worth showing.
-_START_GRACE = timedelta(days=7)
+# How far ahead a not-yet-started tournament still counts as "current".
+#
+# Alerts are forward-looking — the whole point is to subscribe before an event
+# starts — so the pickers look two months out. Standings are not: a table only
+# exists once matches have been played, so that caller passes a lookahead of
+# zero and sees only what is genuinely under way.
+DEFAULT_LOOKAHEAD = timedelta(days=60)
+
+# PandaScore's end_at is often the scheduled finish rather than the actual one,
+# so a tournament stays listed briefly after it is due to end.
 _END_GRACE = timedelta(days=2)
 
 
@@ -28,8 +35,13 @@ def parse_dt(value: str | None) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
-def is_current(tournament: dict, *, now: datetime | None = None) -> bool:
-    """True when a tournament is running now (or starts within a week).
+def is_current(
+    tournament: dict,
+    *,
+    now: datetime | None = None,
+    lookahead: timedelta = DEFAULT_LOOKAHEAD,
+) -> bool:
+    """True when a tournament is running now, or starts within *lookahead*.
 
     Tournaments with no ``begin_at`` are treated as current — PandaScore leaves
     it unset on some freshly announced events, and hiding those is worse than
@@ -39,7 +51,7 @@ def is_current(tournament: dict, *, now: datetime | None = None) -> bool:
     begin = parse_dt(tournament.get("begin_at"))
     end = parse_dt(tournament.get("end_at"))
 
-    if begin is not None and now < begin - _START_GRACE:
+    if begin is not None and now < begin - lookahead:
         return False
     if end is not None and now > end + _END_GRACE:
         return False
@@ -47,11 +59,14 @@ def is_current(tournament: dict, *, now: datetime | None = None) -> bool:
 
 
 def current_tournaments(
-    tournaments: list[dict], *, now: datetime | None = None
+    tournaments: list[dict],
+    *,
+    now: datetime | None = None,
+    lookahead: timedelta = DEFAULT_LOOKAHEAD,
 ) -> list[dict]:
-    """Keep only current tournaments, soonest-ending first."""
+    """Keep only current tournaments, under way first then soonest to start."""
     now = now or datetime.now(timezone.utc)
-    live = [t for t in tournaments if is_current(t, now=now)]
+    live = [t for t in tournaments if is_current(t, now=now, lookahead=lookahead)]
 
     def sort_key(t: dict) -> tuple[int, float]:
         begin = parse_dt(t.get("begin_at"))

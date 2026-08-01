@@ -49,6 +49,10 @@ kick-off** and a **live ping** at kick-off. The reminder carries a button per
 team: tap one to predict the winner. Only you see the reply, and you can change
 your pick until kick-off.
 
+The tournament picker shows anything **running now or starting within two
+months**, so you can subscribe well before an event begins. Picking a whole
+league covers every stage it adds later.
+
 `/alerts list` shows what a channel is subscribed to. `/alerts remove` lets you
 tick the ones to drop — there's also *Remove all*, which asks twice. Both take an
 optional `game:` filter. Alerts need *Manage Server*.
