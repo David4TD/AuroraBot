@@ -44,6 +44,7 @@ async def submit_prediction(
     team: dict,
     opponent: dict | None,
     begin_at: str | None,
+    guild_id: int | None = None,
 ) -> tuple[Outcome, str]:
     """Record (or amend) a user's pick. Returns the outcome and a message."""
     existing = await db.get_prediction(user_id, match_id)
@@ -70,6 +71,7 @@ async def submit_prediction(
             opponent_team_name=opponent_name,
             match_starts_at=begin_at,
             stake=DEFAULT_STAKE,
+            guild_id=guild_id,
         )
         return (
             Outcome.CREATED,

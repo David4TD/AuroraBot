@@ -57,11 +57,18 @@ league covers every stage it adds later.
 tick the ones to drop — there's also *Remove all*, which asks twice. Both take an
 optional `game:` filter. Alerts need *Manage Server*.
 
+When a match **goes live**, the alert lists who backed which team, with the
+split (`3/5`). Predictions have closed by then, so nothing is spoiled.
+
 ## 📅 Daily schedule
 
 League and tournament subscriptions get a message at local midnight listing the
 day's matches, each with its own pair of team buttons for predictions. Busy days
 run across a few messages. `/schedule` posts today's immediately.
+
+The first message also carries a **server leaderboard** (W/L and win rate) and
+the last few settled predictions with who called them right. Both count only
+picks made in that server — `/leaderboard` is the global one.
 
 ## 🏆 What "Tier 1" means
 

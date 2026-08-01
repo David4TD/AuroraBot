@@ -156,6 +156,7 @@ CREATE TABLE IF NOT EXISTS digest_matches (
 CREATE TABLE IF NOT EXISTS predictions (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     discord_id      TEXT NOT NULL,
+    guild_id        TEXT,                 -- where the pick was made; NULL for DMs
     match_id        INTEGER NOT NULL,
     game            TEXT,
     predicted_team_id   INTEGER NOT NULL,

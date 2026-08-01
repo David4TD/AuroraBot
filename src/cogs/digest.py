@@ -163,6 +163,7 @@ class DigestVoteButton(
             team=team,
             opponent=opponent,
             begin_at=row["begin_at"],
+            guild_id=interaction.guild_id,
         )
         await interaction.response.send_message(message, ephemeral=True)
 
@@ -305,6 +306,8 @@ class Digest(commands.Cog):
                 part=part,
                 parts=len(chunks),
             )
+            if part == 0:
+                await self._add_standings(embed, sub["guild_id"])
             try:
                 message = await channel.send(
                     embed=embed,
@@ -419,6 +422,57 @@ class Digest(commands.Cog):
             f"tap a team to predict the winner"
         )
         return embed
+
+    async def _add_standings(self, embed, guild_id) -> None:
+        """Server leaderboard and how the last few picks went.
+
+        Only on the first message of a day — repeating it under every follow-up
+        chunk would bury the actual schedule.
+
+        The board is scoped to this server rather than reusing ``users.points``,
+        which is a global running total and would rank people by activity in
+        servers nobody here can see.
+        """
+        if not guild_id:
+            return
+        try:
+            board = await self.bot.db.guild_leaderboard(int(guild_id), limit=5)
+            recent = await self.bot.db.recent_results(int(guild_id), limit=5)
+        except Exception:  # noqa: BLE001 - the schedule matters more
+            log.exception("could not build digest standings for guild %s", guild_id)
+            return
+
+        if board:
+            medals = ["🥇", "🥈", "🥉"]
+            lines = []
+            for n, row in enumerate(board):
+                won, lost = int(row["won"] or 0), int(row["lost"] or 0)
+                total = won + lost
+                rate = f"{round(100 * won / total)}%" if total else "—"
+                mark = medals[n] if n < len(medals) else f"`{n + 1}.`"
+                lines.append(
+                    f"{mark} <@{row['discord_id']}> — **{won}**W/{lost}L · {rate}"
+                )
+            embed.add_field(
+                name="🏆 Leaderboard (this server)",
+                value="\n".join(lines)[:1024],
+                inline=False,
+            )
+
+        if recent:
+            lines = []
+            for row in recent:
+                won = row["status"] == "won"
+                versus = f" vs {row['opponent_team_name']}" if row["opponent_team_name"] else ""
+                lines.append(
+                    f"{'✅' if won else '❌'} <@{row['discord_id']}> — "
+                    f"{row['predicted_team_name']}{versus}"
+                )
+            embed.add_field(
+                name="🔮 Recent results",
+                value="\n".join(lines)[:1024],
+                inline=False,
+            )
 
     @sweep.before_loop
     async def _before(self) -> None:

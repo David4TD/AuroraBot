@@ -98,6 +98,15 @@ class Database:
             await self._conn.execute("DROP INDEX IF EXISTS idx_alertsub_unique")
             await self._conn.commit()
 
+        # Step 3: predictions learn which server they were made in, so a live
+        # alert can name this server's voters without exposing anyone from
+        # another. Existing rows keep NULL and are simply never attributed.
+        prediction_columns = await self._table_columns("predictions")
+        if prediction_columns and "guild_id" not in prediction_columns:
+            log.info("Adding guild_id to predictions…")
+            await self._conn.execute("ALTER TABLE predictions ADD COLUMN guild_id TEXT")
+            await self._conn.commit()
+
     async def _migrate_data(self) -> None:
         """Data migrations, run after schema.sql so every table exists."""
         assert self._conn is not None
@@ -689,17 +698,19 @@ class Database:
         opponent_team_name: str | None,
         match_starts_at: str | None,
         stake: int,
+        guild_id: int | None = None,
     ) -> bool:
         try:
             await self.conn.execute(
                 """
                 INSERT INTO predictions
-                    (discord_id, match_id, game, predicted_team_id,
+                    (discord_id, guild_id, match_id, game, predicted_team_id,
                      predicted_team_name, opponent_team_name, match_starts_at, stake)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(discord_id),
+                    str(guild_id) if guild_id else None,
                     match_id,
                     game,
                     predicted_team_id,
@@ -782,7 +793,76 @@ class Database:
         )
         return list(await cur.fetchall())
 
+    async def match_predictions(
+        self, match_id: int, guild_id: int | None
+    ) -> list[aiosqlite.Row]:
+        """Who picked whom for this match, in this server.
+
+        Scoped to the guild on purpose: predictions are stored per user, not
+        per server, so an unscoped list would print names from every other
+        server the bot is in into this channel.
+        """
+        if guild_id is None:
+            return []
+        cur = await self.conn.execute(
+            """
+            SELECT p.discord_id, p.predicted_team_id, p.predicted_team_name,
+                   COALESCE(u.display_name, 'Someone') AS display_name
+            FROM predictions p
+            LEFT JOIN users u ON u.discord_id = p.discord_id
+            WHERE p.match_id = ? AND p.guild_id = ?
+            ORDER BY p.created_at
+            """,
+            (match_id, str(guild_id)),
+        )
+        return list(await cur.fetchall())
+
     # ── leaderboard ──────────────────────────────────────────────────────────
+    async def guild_leaderboard(
+        self, guild_id: int, limit: int = 5
+    ) -> list[aiosqlite.Row]:
+        """Top predictors *in this server*, by settled predictions.
+
+        ``users.points`` is a global running total, so it can't answer "who is
+        winning here". This aggregates the server's own settled picks instead.
+        """
+        cur = await self.conn.execute(
+            """
+            SELECT p.discord_id,
+                   COALESCE(u.display_name, 'Someone') AS display_name,
+                   SUM(p.status = 'won')  AS won,
+                   SUM(p.status = 'lost') AS lost
+            FROM predictions p
+            LEFT JOIN users u ON u.discord_id = p.discord_id
+            WHERE p.guild_id = ? AND p.status IN ('won', 'lost')
+            GROUP BY p.discord_id
+            HAVING won + lost > 0
+            ORDER BY won DESC, (won + lost) ASC, display_name
+            LIMIT ?
+            """,
+            (str(guild_id), limit),
+        )
+        return list(await cur.fetchall())
+
+    async def recent_results(
+        self, guild_id: int, limit: int = 5
+    ) -> list[aiosqlite.Row]:
+        """This server's most recently settled predictions, newest first."""
+        cur = await self.conn.execute(
+            """
+            SELECT p.discord_id, p.status, p.predicted_team_name,
+                   p.opponent_team_name, p.resolved_at,
+                   COALESCE(u.display_name, 'Someone') AS display_name
+            FROM predictions p
+            LEFT JOIN users u ON u.discord_id = p.discord_id
+            WHERE p.guild_id = ? AND p.status IN ('won', 'lost')
+            ORDER BY p.resolved_at DESC, p.id DESC
+            LIMIT ?
+            """,
+            (str(guild_id), limit),
+        )
+        return list(await cur.fetchall())
+
     async def leaderboard(self, limit: int = 10) -> list[aiosqlite.Row]:
         cur = await self.conn.execute(
             "SELECT * FROM users ORDER BY points DESC, predictions_won DESC LIMIT ?",

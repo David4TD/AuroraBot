@@ -111,6 +111,7 @@ class VoteButton(
             team=team,
             opponent=opponent,
             begin_at=row["begin_at"],
+            guild_id=interaction.guild_id,
         )
         await interaction.response.send_message(message, ephemeral=True)
 
@@ -610,10 +611,16 @@ class Alerts(commands.Cog):
                     VoteButton(side, team["name"], self.bot.icons.partial(team))
                 )
 
+        embed = match_embed(match, sub["game"], self.bot.icons)
+        if state != "reminder" and len(teams) >= 2:
+            # Predictions have closed, so naming who backed whom spoils nothing
+            # and gives the channel something to argue about while it plays.
+            await self._add_votes(embed, match_id, sub["guild_id"], teams)
+
         try:
             message = await channel.send(
                 content=content,
-                embed=match_embed(match, sub["game"], self.bot.icons),
+                embed=embed,
                 view=view,
             )
         except discord.Forbidden:
@@ -629,6 +636,39 @@ class Alerts(commands.Cog):
         # Reminders double as a prediction poll — the buttons pick a winner.
         if predictable:
             await self._attach_vote_buttons(message, match, teams, sub["game"])
+
+    async def _add_votes(self, embed, match_id: int, guild_id, teams) -> None:
+        """List this server's predictions on a going-live embed, side by side.
+
+        Scoped to the server the alert is posting in — predictions are stored
+        per user, so an unscoped list would print names from every other server
+        the bot serves into this channel.
+        """
+        if not guild_id:
+            return
+        try:
+            picks = await self.bot.db.match_predictions(match_id, int(guild_id))
+        except Exception:  # noqa: BLE001 - an alert must still go out
+            log.exception("could not read predictions for match %s", match_id)
+            return
+        if not picks:
+            return
+
+        icons = self.bot.icons
+        for team in teams[:2]:
+            backers = [
+                p["display_name"] for p in picks
+                if int(p["predicted_team_id"]) == int(team["id"])
+            ]
+            share = f"{len(backers)}/{len(picks)}"
+            value = ", ".join(backers[:12]) or "_Nobody_"
+            if len(backers) > 12:
+                value += f" _+{len(backers) - 12} more_"
+            embed.add_field(
+                name=f"{icons.icon(team)} {team['name']} · {share}".strip()[:256],
+                value=value[:1024],
+                inline=True,
+            )
 
     async def _attach_vote_buttons(
         self, message: discord.Message, match: dict, teams: list[dict], game_key: str

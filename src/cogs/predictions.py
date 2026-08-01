@@ -70,6 +70,7 @@ class TeamButton(discord.ui.Button):
             team=self.team,
             opponent=opponent,
             begin_at=self.match.get("begin_at"),
+            guild_id=interaction.guild_id,
         )
         await interaction.response.edit_message(content=message, view=None)
 
