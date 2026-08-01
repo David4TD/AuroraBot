@@ -424,10 +424,21 @@ class Database:
         except aiosqlite.IntegrityError:
             return False  # duplicate subscription
 
-    async def remove_subscription(self, sub_id: int, guild_id: int) -> int:
+    async def remove_subscriptions(self, sub_ids, guild_id: int) -> int:
+        """Delete several subscriptions at once. Returns how many went.
+
+        ``guild_id`` is part of the WHERE clause, not a pre-check: the ids come
+        back from a Discord component, so they must never be trusted to belong
+        to the server whose moderator is clicking.
+        """
+        ids = [int(i) for i in sub_ids]
+        if not ids:
+            return 0
+        placeholders = ",".join("?" * len(ids))
         cur = await self.conn.execute(
-            "DELETE FROM alert_subscriptions WHERE id = ? AND guild_id = ?",
-            (sub_id, str(guild_id)),
+            f"DELETE FROM alert_subscriptions "  # noqa: S608 - placeholders only
+            f"WHERE id IN ({placeholders}) AND guild_id = ?",
+            (*ids, str(guild_id)),
         )
         await self.conn.commit()
         return cur.rowcount

@@ -22,7 +22,7 @@ Built with **discord.py 2.x**, containerised for one-click **Unraid** deployment
 | **Lineups** | `/lineup` — who's playing an upcoming match, by role |
 | **Profile** | `/profile`, `/follow`, `/unfollow`, `/setgame` |
 | **Predictions** | `/predict`, `/mypredictions`, `/leaderboard` |
-| **Alerts** | `/alerts add`, `/alerts list`, `/alerts remove` |
+| **Alerts** | `/alerts add`, `/alerts list`, `/alerts remove` — pick from a list, no IDs |
 | **Schedule** | `/schedule` — post today's matches now |
 | **Games** | `/games` — pick which titles this server follows (**required first**) |
 | **Meta** | `/help`, `/ping` |
@@ -75,6 +75,24 @@ ephemeral, so only you see it: no DMs, and no extra messages in the channel. You
 can switch until kick-off, then the pick locks.
 
 Buttons are persistent, so reminders posted before a restart keep working.
+
+### Managing them
+
+`/alerts list` groups subscriptions by channel and numbers them **per server**,
+so you see `1.`, `2.`, `3.` regardless of how many other servers the bot runs
+in. Alerts left pointing at a deleted channel are flagged rather than shown as a
+broken mention.
+
+`/alerts remove` asks you to **tick the ones to drop** — no ID to copy. Pick
+several at once, or use *Remove all* (two clicks, since there's no undo). Add
+`game:` to either command to narrow the list; on a server with more than 25
+alerts that's how you reach the ones past the picker's limit, though *Remove
+all* still covers everything in scope.
+
+The numbers in `/alerts list` are display-only. They renumber after every
+change, which is exactly why removal is a picker: the previous version asked you
+to retype an ID, and those IDs were global, so one server's first alert could
+show up as `#47`.
 
 ## 📅 Daily schedule
 

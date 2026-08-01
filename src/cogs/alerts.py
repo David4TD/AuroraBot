@@ -115,6 +115,122 @@ class VoteButton(
         await interaction.response.send_message(message, ephemeral=True)
 
 
+SCOPE_ICON = {"team": "👥", "league": "🏅", "tournament": "🏆", "game": "🎮"}
+MAX_PICKER_OPTIONS = 25       # Discord's cap on select options
+
+
+def describe_target(sub) -> str:
+    """What a subscription watches, as plain text (no channel, no game)."""
+    scope = sub["scope"] or "game"
+    if scope == "team":
+        return sub["team_name"] or "a team"
+    if scope == "league":
+        name = sub["league_name"] or "a league"
+        flag = region_flag(name)
+        return f"{flag} {name} (all stages)" if flag else f"{name} (all stages)"
+    if scope == "tournament":
+        name = sub["tournament_name"] or "a tournament"
+        flag = region_flag(name)
+        return f"{flag} {name}" if flag else name
+    return f"all {label_for(sub['game'])}"
+
+
+class RemoveSelect(discord.ui.Select):
+    """Pick subscriptions to delete.
+
+    Options carry the real database id as their value, so nothing depends on
+    the numbers shown in ``/alerts list`` — those are per-server ordinals that
+    shift the moment anything is removed, and asking someone to retype one was
+    the old design's flaw.
+    """
+
+    def __init__(self, view_: "RemoveView", subs, bot) -> None:
+        self._view = view_
+        options = []
+        for n, s in enumerate(subs[:MAX_PICKER_OPTIONS], start=1):
+            scope = s["scope"] or "game"
+            channel = bot.get_channel(int(s["channel_id"]))
+            where = f"#{channel.name}" if channel else "deleted channel"
+            options.append(
+                discord.SelectOption(
+                    label=f"{n}. {describe_target(s)}"[:100],
+                    value=str(int(s["id"])),
+                    description=f"{where} · {label_for(s['game'])}"[:100],
+                    emoji=SCOPE_ICON.get(scope, "•"),
+                )
+            )
+        super().__init__(
+            placeholder="Select the alerts to remove…",
+            options=options,
+            min_values=1,
+            max_values=len(options),
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        removed = await self._view.bot.db.remove_subscriptions(
+            self.values, interaction.guild_id
+        )
+        self._view.stop()
+        await interaction.response.edit_message(
+            content=None,
+            embed=discord.Embed(
+                description=(
+                    f"🗑️ Removed **{removed}** alert{'s' if removed != 1 else ''}."
+                    if removed
+                    else "Those alerts were already gone."
+                ),
+                color=GREEN,
+            ),
+            view=None,
+        )
+
+
+class RemoveAllButton(discord.ui.Button):
+    """Clear every alert in the server — behind a second, explicit click."""
+
+    def __init__(self, view_: "RemoveView", count: int) -> None:
+        self._view = view_
+        self.count = count
+        self.armed = False
+        super().__init__(label=f"Remove all {count}", style=discord.ButtonStyle.danger)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not self.armed:
+            # Deleting a server's whole alert config is not something to do on
+            # a stray click, and there is no undo.
+            self.armed = True
+            self.label = f"Click again to confirm ({self.count})"
+            await interaction.response.edit_message(view=self._view)
+            return
+
+        # Every subscription in scope, not just the 25 the picker could show.
+        ids = [int(s["id"]) for s in self._view.subs]
+        removed = await self._view.bot.db.remove_subscriptions(ids, interaction.guild_id)
+        self._view.stop()
+        await interaction.response.edit_message(
+            content=None,
+            embed=discord.Embed(
+                description=(
+                    f"🗑️ Removed all **{removed}** {self._view.scope} alerts."
+                ),
+                color=GREEN,
+            ),
+            view=None,
+        )
+
+
+class RemoveView(discord.ui.View):
+    def __init__(self, bot, subs, scope: str = "") -> None:
+        super().__init__(timeout=180)
+        self.bot = bot
+        self.subs = subs
+        # "Remove all" clears whatever the command scoped to, so the wording has
+        # to follow the filter rather than always claiming the whole server.
+        self.scope = scope or "server"
+        self.add_item(RemoveSelect(self, subs, bot))
+        self.add_item(RemoveAllButton(self, len(subs)))
+
+
 class Alerts(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -286,55 +402,92 @@ class Alerts(commands.Cog):
         return {"id": int(best["id"]), "name": best.get("name", "Team")}
 
     @alerts.command(name="list", description="List this server's alert subscriptions.")
-    async def list_subs(self, interaction: discord.Interaction) -> None:
+    @app_commands.describe(game="Only show alerts for this game.")
+    @app_commands.choices(game=GAME_CHOICES)
+    async def list_subs(
+        self,
+        interaction: discord.Interaction,
+        game: app_commands.Choice[str] | None = None,
+    ) -> None:
         subs = await self.bot.db.list_subscriptions(interaction.guild_id)
+        if game is not None:
+            subs = [s for s in subs if s["game"] == game.value]
         if not subs:
             await interaction.response.send_message(
-                "No alerts configured. Use `/alerts add`.", ephemeral=True
-            )
-            return
-        icon = {"team": "👥", "league": "🏅", "tournament": "🏆", "game": "🎮"}
-        lines = []
-        for s in subs:
-            scope = s["scope"] or "game"
-            if scope == "team":
-                target = s["team_name"] or "a team"
-            elif scope == "league":
-                target = s["league_name"] or "a league"
-                flag = region_flag(target)
-                target = f"{flag} {target} (all stages)" if flag                     else f"{target} (all stages)"
-            elif scope == "tournament":
-                target = s["tournament_name"] or "a tournament"
-                flag = region_flag(target)
-                if flag:
-                    target = f"{flag} {target}"
-            else:
-                target = f"all {label_for(s['game'])}"
-            lines.append(
-                f"`#{s['id']}` {icon.get(scope, '•')} <#{s['channel_id']}> → "
-                f"**{target}** · {label_for(s['game'])}"
-            )
-        embed = discord.Embed(
-            title="🔔 Alert subscriptions", description="\n".join(lines), color=BRAND
-        )
-        embed.set_footer(
-            text=f"Reminders fire {self.bot.settings.alert_lead_minutes} min before kick-off."
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @alerts.command(name="remove", description="Remove a subscription by its ID.")
-    @app_commands.describe(subscription_id="ID from /alerts list (e.g. 3).")
-    async def remove(self, interaction: discord.Interaction, subscription_id: int) -> None:
-        removed = await self.bot.db.remove_subscription(subscription_id, interaction.guild_id)
-        if removed:
-            await interaction.response.send_message(
-                embed=discord.Embed(description="🗑️ Subscription removed.", color=GREEN),
+                f"No {game.name} alerts configured." if game
+                else "No alerts configured. Use `/alerts add`.",
                 ephemeral=True,
             )
-        else:
-            await interaction.response.send_message(
-                "No subscription with that ID in this server.", ephemeral=True
+            return
+
+        # Grouped by channel, because that's how someone thinks about them —
+        # "what does #esports get?" — rather than as one flat list.
+        by_channel: dict[str, list] = {}
+        for s in subs:
+            by_channel.setdefault(str(s["channel_id"]), []).append(s)
+
+        embed = discord.Embed(title="🔔 Alert subscriptions", color=BRAND)
+        orphans = 0
+        n = 0
+        for channel_id, group in by_channel.items():
+            channel = self.bot.get_channel(int(channel_id))
+            if channel is None:
+                orphans += len(group)
+                heading = "⚠️ deleted channel"
+            else:
+                heading = f"#{channel.name}"
+            lines = []
+            for s in group:
+                n += 1
+                scope = s["scope"] or "game"
+                lines.append(
+                    f"`{n}.` {SCOPE_ICON.get(scope, '•')} **{describe_target(s)}** "
+                    f"· {label_for(s['game'])}"
+                )
+            embed.add_field(name=heading, value="\n".join(lines), inline=False)
+
+        footer = (
+            f"Reminders fire {self.bot.settings.alert_lead_minutes} min before "
+            f"kick-off · /alerts remove to clear any of these"
+        )
+        if orphans:
+            footer = (
+                f"{orphans} alert(s) point at a deleted channel — "
+                f"/alerts remove will clear them. " + footer
             )
+        embed.set_footer(text=footer)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @alerts.command(name="remove", description="Remove alerts — pick them from a list.")
+    @app_commands.describe(game="Narrow the list to one game.")
+    @app_commands.choices(game=GAME_CHOICES)
+    async def remove(
+        self,
+        interaction: discord.Interaction,
+        game: app_commands.Choice[str] | None = None,
+    ) -> None:
+        subs = await self.bot.db.list_subscriptions(interaction.guild_id)
+        if game is not None:
+            subs = [s for s in subs if s["game"] == game.value]
+        if not subs:
+            await interaction.response.send_message(
+                f"No {game.name} alerts to remove." if game
+                else "No alerts configured in this server.",
+                ephemeral=True,
+            )
+            return
+
+        content = None
+        if len(subs) > MAX_PICKER_OPTIONS:
+            content = (
+                f"Showing the first **{MAX_PICKER_OPTIONS}** of {len(subs)} alerts — "
+                f"run `/alerts remove game:…` to narrow the list."
+            )
+        await interaction.response.send_message(
+            content=content,
+            view=RemoveView(self.bot, subs, scope=game.name if game else "server"),
+            ephemeral=True,
+        )
 
     # ── matching ─────────────────────────────────────────────────────────────
     @staticmethod
