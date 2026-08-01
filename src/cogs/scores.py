@@ -267,7 +267,7 @@ class Scores(commands.Cog):
         if filters is None:
             return
         try:
-            matches = await self._feed(self.bot.api.past_matches, filters)
+            matches = await self._finished(filters)
         except PandaScoreError:
             await interaction.followup.send("The scores service is unavailable right now.")
             return
@@ -278,6 +278,43 @@ class Scores(commands.Cog):
         await interaction.followup.send(
             content=f"✅ **Recent results** · {filters.describe()}", embeds=embeds
         )
+
+    async def _finished(self, filters: Filters) -> list[dict]:
+        """Recent Tier 1 results, newest first.
+
+        Sourced from the current Tier 1 tournaments rather than
+        ``/matches/past``. PandaScore has no server-side tier filter, so the
+        generic feed has to be filtered client-side over one page — and for
+        Counter-Strike that page is *entirely* tier C/D, because the volume of
+        ESEA/CCT matches buries every event anyone would ask about. Measured:
+        the past feed yielded 0 Tier 1 CS matches out of 100, while BLAST
+        Bounty's playoffs had five finished that same week.
+
+        The generic feed stays as a fallback for the case where no Tier 1
+        tournament is currently listed — an off-season week still shows the
+        last thing that happened.
+        """
+        matches = await self.bot.tourneys.matches(
+            filters.game_key, filters.target, status="finished"
+        )
+        matches = filter_enabled(
+            filter_for(self.bot.settings, matches),
+            filters.enabled,
+            self.bot.settings.cs_slug,
+        )
+        matches = filters.apply(matches)
+
+        if not matches:
+            matches = await self._feed(self.bot.api.past_matches, filters)
+
+        # end_at is often unset — PandaScore leaves it null on whole games —
+        # so fall back to the kick-off time rather than sorting everything
+        # unset to one end.
+        matches.sort(
+            key=lambda m: str(m.get("end_at") or m.get("begin_at") or ""),
+            reverse=True,
+        )
+        return matches
 
 
 async def setup(bot: commands.Bot) -> None:

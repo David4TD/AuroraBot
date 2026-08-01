@@ -42,6 +42,10 @@ FETCH_SIZE = 50
 # longer than the tournament list.
 ROSTER_CACHE_SECONDS = 6 * 60 * 60
 
+# A tournament's match list gains a result every few hours at most, and both
+# /results and /upcoming read it.
+MATCH_CACHE_SECONDS = 5 * 60
+
 # Canonical position order, so both sides of a lineup card read across.
 #
 # These are the strings PandaScore actually returns, which are **not** the
@@ -90,6 +94,7 @@ class TournamentDirectory:
         self._cache: dict[str, tuple[datetime, list[dict]]] = {}
         self._warming: dict[str, asyncio.Task] = {}
         self._rosters: dict[int, tuple[datetime, list[dict]]] = {}
+        self._tournament_matches_cache: dict[int, tuple[datetime, list[dict]]] = {}
 
     # ── fetching ─────────────────────────────────────────────────────────────
     async def refresh(self, game_key: str) -> list[dict]:
@@ -317,6 +322,57 @@ class TournamentDirectory:
         players.sort(key=lambda p: (ROLE_ORDER.get(p["role"], 99), p["name"].lower()))
         self._rosters[team_id] = (datetime.now(timezone.utc), players)
         return players
+
+    # ── matches from known Tier 1 tournaments ────────────────────────────────
+    async def matches(
+        self, game_key: str, target: dict | None = None, *, status: str | None = None
+    ) -> list[dict]:
+        """Matches belonging to the current Tier 1 tournaments in scope.
+
+        The per-game feeds (``/matches/past`` and friends) have no server-side
+        tier filter, so they're filtered client-side over a fixed page — and
+        that fails badly for results: Counter-Strike runs enough tier C/D
+        matches that a full page of 100 recent finishes contains **none** of the
+        Tier 1 ones. Asking each known Tier 1 tournament instead can't miss
+        them, because the tournament is the thing that was graded.
+
+        Cached briefly: /results and /upcoming both call this, and a tournament's
+        match list changes on the order of hours.
+        """
+        tournaments = await self.current(game_key) or []
+        in_scope = [t for t in tournaments if _in_target(t, target)]
+        if not in_scope:
+            return []
+
+        results = await asyncio.gather(
+            *(self._tournament_matches(int(t["id"])) for t in in_scope),
+            return_exceptions=True,
+        )
+        out: dict[int, dict] = {}
+        for chunk in results:
+            if isinstance(chunk, BaseException):
+                continue          # one tournament failing must not empty the rest
+            for match in chunk:
+                if status and (match.get("status") or "").lower() != status:
+                    continue
+                out[int(match["id"])] = match
+        return list(out.values())
+
+    async def _tournament_matches(self, tournament_id: int) -> list[dict]:
+        cached = self._tournament_matches_cache.get(tournament_id)
+        if cached and (
+            datetime.now(timezone.utc) - cached[0]
+        ).total_seconds() < MATCH_CACHE_SECONDS:
+            return cached[1]
+        try:
+            rows = await self.bot.api.tournament_matches(tournament_id)
+        except PandaScoreError as exc:
+            log.warning("match lookup failed for tournament %s: %s", tournament_id, exc)
+            return cached[1] if cached else []
+        self._tournament_matches_cache[tournament_id] = (
+            datetime.now(timezone.utc), rows
+        )
+        return rows
 
     # ── derived views ────────────────────────────────────────────────────────
     async def teams(self, game_key: str, target: dict | None) -> list[dict]:

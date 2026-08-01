@@ -96,6 +96,23 @@ class PandaScoreClient:
         )
         return data if isinstance(data, list) else []
 
+    async def tournament_matches(
+        self, tournament_id: int, per_page: int = 50, sort: str = "-begin_at"
+    ) -> list[dict]:
+        """Every match in one tournament.
+
+        The generic ``/matches/past`` feed can't answer "recent Tier 1 results":
+        there is no server-side tier filter, and games like Counter-Strike run
+        so many tier C/D matches that a whole page of 100 contains none of the
+        events anyone asked about. Asking a known Tier 1 tournament directly
+        sidesteps that entirely.
+        """
+        data = await self._get(
+            f"/tournaments/{tournament_id}/matches",
+            {"per_page": per_page, "sort": sort},
+        )
+        return data if isinstance(data, list) else []
+
     async def get_match(self, match_id: int) -> dict:
         data = await self._get(f"/matches/{match_id}")
         return data if isinstance(data, dict) else {}

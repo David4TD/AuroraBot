@@ -140,6 +140,11 @@ and `A`** — otherwise every regional league would be filtered out.
 An empty feed is usually the filter doing its job. `TIERS=s,a` is the default;
 `TOP_TIER_ONLY=false` turns filtering off.
 
+PandaScore has no server-side tier filter on matches, so feeds are over-fetched
+and filtered here. `/results` doesn't use the generic past feed at all — for
+Counter-Strike a whole page of it is ESEA and CCT matches with not one Tier 1
+among them — it reads the current Tier 1 tournaments directly instead.
+
 ## 🏳️ Logos and flags
 
 Teams show their crest and events show a region flag. Icons warm up in the
