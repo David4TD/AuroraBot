@@ -1,199 +1,124 @@
 # 🌌 AuroraBot
 
-A Discord bot for eSports fans: live scores, standings, team analytics, match
-alerts and a prediction leaderboard — limited to **Tier 1** tournaments so your
-channels stay signal, not noise.
+A Discord bot for eSports fans: live scores, standings, lineups, match alerts and
+a prediction leaderboard — limited to **Tier 1** tournaments so your channels stay
+signal, not noise.
 
 Covers **League of Legends, Counter-Strike 2, Valorant, Dota 2, Rocket League,
 Rainbow Six, Call of Duty, Overwatch, PUBG, Mobile Legends** and more, powered by
 the [PandaScore API](https://pandascore.co).
 
-Built with **discord.py 2.x**, containerised for one-click **Unraid** deployment.
-
 ---
+
+## 🚀 Start here
+
+**Games are opt-in.** A new server follows nothing until someone with *Manage
+Server* runs `/games` and picks some. Until then the bot stays quiet.
 
 ## ✨ Commands
 
 | Area | Commands |
 |------|----------|
-| **Live scores** | `/live`, `/upcoming`, `/results` — filter game → tournament → team |
+| **Games** | `/games` — pick which titles this server follows (**do this first**) |
+| **Live scores** | `/live`, `/upcoming`, `/results` |
 | **Standings** | `/standings <league>` — current splits only |
-| **Analytics** | `/team <name>` — form, win rate, roster, deep-stats links |
+| **Analytics** | `/team <name>` — form, win rate, roster, stats links |
 | **Lineups** | `/lineup` — who's playing an upcoming match, by role |
-| **Profile** | `/profile`, `/follow`, `/unfollow`, `/setgame` |
-| **Predictions** | `/predict`, `/mypredictions`, `/leaderboard` |
-| **Alerts** | `/alerts add`, `/alerts list`, `/alerts remove` — pick from a list, no IDs |
+| **Alerts** | `/alerts add`, `/alerts list`, `/alerts remove` |
 | **Schedule** | `/schedule` — post today's matches now |
-| **Games** | `/games` — pick which titles this server follows (**required first**) |
+| **Predictions** | `/predict`, `/mypredictions`, `/leaderboard` |
+| **Profile** | `/profile`, `/follow`, `/unfollow`, `/setgame` |
 | **Meta** | `/help`, `/ping` |
 
----
-
-## 🔎 Filtering
-
-`/live`, `/upcoming`, `/results` and `/predict` share one cascade, each level's
-options scoped by the one above it:
+Most commands filter **game → tournament → team**, each step optional after the
+first:
 
 ```
 /live game:LoL                            all Tier 1 LoL
-/live game:LoL tournament:LCK             that league, all its stages
+/live game:LoL tournament:LCK             that league
 /live game:LoL tournament:LCK team:T1     one team in it
 ```
 
-Only the game is needed — and `/setgame` supplies it if you've set a default, so
-a bare `/live` still works. Tournament and team narrow rather than block.
-
-The tournament picker lists **whole leagues first**, then their stages indented
-beneath, because a league's stages are separate tournaments that often run in
-parallel (LCK splits into a Legend Group and a Rise Group). The team picker then
-offers only that tournament's roster.
-
-Rosters ride along on the tournament payload, so the whole cascade costs the same
-two API calls per game that the tournament list already cost — no extra request
-per level, and the cache is shared with `/alerts add`.
+Set a default game once with `/setgame` and a bare `/live` works.
 
 ## 🔔 Alerts
 
-`/alerts add` subscribes the current channel. Scope it four ways:
+`/alerts add` subscribes the current channel — to a team, a league, a single
+stage, or a whole game. Every match then gets a **reminder 30 minutes before
+kick-off** and a **live ping** at kick-off. The reminder carries a button per
+team: tap one to predict the winner. Only you see the reply, and you can change
+your pick until kick-off.
 
-```
-/alerts add game:LoL                        every Tier 1 LoL match
-/alerts add game:LoL team:G2 Esports        one team
-/alerts add game:LoL tournament:LCK         a whole league, all stages
-/alerts add game:LoL tournament:LCK · …     one specific stage
-```
-
-The `tournament` field autocompletes. **Whole leagues are listed first**, because
-a league's stages are separate tournaments that often run in parallel — LCK
-splits into a Legend Group and a Rise Group — so picking one stage would miss the
-other. Pick `LCK` to follow everything, or a `↳` entry for a single stage.
-
-Each subscribed match produces two pings: a **reminder** 30 minutes before
-kick-off (`ALERT_LEAD_MINUTES`) and a **live** alert at kick-off. The reminder
-carries a **button per team** — click one to predict the winner. The reply is
-ephemeral, so only you see it: no DMs, and no extra messages in the channel. You
-can switch until kick-off, then the pick locks.
-
-Buttons are persistent, so reminders posted before a restart keep working.
-
-### Managing them
-
-`/alerts list` groups subscriptions by channel and numbers them **per server**,
-so you see `1.`, `2.`, `3.` regardless of how many other servers the bot runs
-in. Alerts left pointing at a deleted channel are flagged rather than shown as a
-broken mention.
-
-`/alerts remove` asks you to **tick the ones to drop** — no ID to copy. Pick
-several at once, or use *Remove all* (two clicks, since there's no undo). Add
-`game:` to either command to narrow the list; on a server with more than 25
-alerts that's how you reach the ones past the picker's limit, though *Remove
-all* still covers everything in scope.
-
-The numbers in `/alerts list` are display-only. They renumber after every
-change, which is exactly why removal is a picker: the previous version asked you
-to retype an ID, and those IDs were global, so one server's first alert could
-show up as `#47`.
+`/alerts list` shows what a channel is subscribed to. `/alerts remove` lets you
+tick the ones to drop — there's also *Remove all*, which asks twice. Both take an
+optional `game:` filter. Alerts need *Manage Server*.
 
 ## 📅 Daily schedule
 
-League and tournament subscriptions also get a message at local midnight listing
-the day's matches. Every match carries **its own pair of team buttons** — one
-tap to predict, no menu to open — and replies are private, so voting doesn't
-clutter the channel.
-
-Discord allows five button rows per message and a match needs two buttons, so a
-day with more than **five** matches is split across follow-up messages. Each
-message lists only the matches its own buttons cover, and numbering runs
-continuously, so "6." is the same match in the list and on the button.
-
-`/schedule` posts the current day immediately. Both need *Manage Server*.
-
-## 🎮 Per-server games — start here
-
-**Games are opt-in.** A server follows nothing until someone with *Manage
-Server* runs `/games` and picks, so AuroraBot never posts about titles nobody
-asked for. Until then it stays idle and the commands say so.
-
-`/games` shows the current selection and offers a multi-select, plus **Follow
-all** / **Follow none** shortcuts. A followed game appears in the feeds and its
-alerts fire; an unfollowed one is dropped and its alert poll is skipped
-entirely, so it costs no API call. Asking for it explicitly still answers,
-saying the server doesn't follow it. Existing `/alerts` subscriptions for a
-removed game are kept and resume if you add it back.
-
-Choosing games also **pre-warms the tournament cache** for them, so the first
-`/alerts add` autocomplete is instant. A background loop keeps it warm, and only
-for games someone actually follows.
-
-DMs have no server to configure, so every game is available there.
+League and tournament subscriptions get a message at local midnight listing the
+day's matches, each with its own pair of team buttons for predictions. Busy days
+run across a few messages. `/schedule` posts today's immediately.
 
 ## 🏆 What "Tier 1" means
 
-PandaScore grades tournaments `S > A > B > C > D`, and reserves `S` for the
-majors — so **filtering on `S` alone drops every regional league**:
+PandaScore reserves its top `S` grade for the majors, so AuroraBot counts **`S`
+and `A`** — otherwise every regional league would be filtered out.
 
 | Grade | Examples |
 |-------|----------|
-| `S` | Worlds, MSI, The International, CS Majors / IEM / BLAST, VCT Masters |
-| `A` | **LEC, LCK, LCS, LPL**, VCT EMEA / NA, ESL Pro League |
+| `S` | Worlds, MSI, The International, CS Majors, VCT Masters |
+| `A` | LEC, LCK, LCS, LPL, VCT EMEA / NA, ESL Pro League |
 | `B`–`D` | Qualifiers, academy and development circuits |
 
-The default is therefore `TIERS=s,a`. Use `TIERS=s` for majors only, `s,a,b` to
-widen, or `TOP_TIER_ONLY=false` to disable filtering.
+An empty feed is usually the filter doing its job. `TIERS=s,a` is the default;
+`TOP_TIER_ONLY=false` turns filtering off.
 
-If a feed looks empty, that's usually the filter working — `/standings` names
-what it filtered out and at what grade.
+## 🏳️ Logos and flags
 
-## 🧑‍🤝‍🧑 Lineup cards
+Teams show their crest and events show a region flag. Icons warm up in the
+background, so the first view of a new league is plain and fills in over a few
+seconds.
 
-`/lineup` picks an upcoming match — game → tournament → team, same cascade as
-everything else — and prints both sides as two columns, one row per lane, so
-they read across: Top opposite Top, Support opposite Support.
-
-Two honest limits:
-
-- **These are current rosters, not confirmed starters.** PandaScore only
-  publishes a per-match lineup through `expected_roster`, which is empty on this
-  plan, so a team carrying a substitute shows it on a *Bench* line rather than
-  guessing who starts. The card's footer says as much.
-- **No player photos.** Discord renders images inline only as custom emoji, and
-  one per player would exhaust the same 2000-emoji budget the team crests use.
-  Nationality flags carry most of that information for none of the cost.
-
-## 🏳️ Flags and logos
-
-Teams show their crest inline (uploaded once as an application emoji) and events
-show a region flag — 🇰🇷 LCK, 🇪🇺 LEC, 🌏 VCT Pacific, 🌍 Worlds.
-
-Icons **warm up**: the first view of a new league is mostly plain and fills in
-over a few seconds. That's expected, not a fault — rendering never waits on the
-network. Anything that fails falls back to plain text.
-
-PandaScore exposes no region field on *leagues*, so event flags come from a
-table in `src/utils/regions.py`. (Tournaments do carry `region`, but only as
-coarse codes like `WEU`, and their `country` is the venue — VCT EMEA played in
-Berlin reports `DE` — so neither is a safe source for a league's flag.) Fixing
-or adding a league is a one-line edit:
-
-```python
-"lck": "kr",
-```
-
-### Deep-stats links
-Analytics embeds link out to [gol.gg](https://gol.gg) (LoL),
-[vlr.gg](https://vlr.gg) (Valorant) and [hltv.org](https://hltv.org) (CS2).
+Lineup cards show each team's **current roster** — PandaScore doesn't publish
+confirmed starters, so substitutes may appear.
 
 ---
 
-## 🔑 Prerequisites
+## 🔑 Setup
 
-1. **Discord bot token** — [Developer Portal](https://discord.com/developers/applications)
-   → your app → Bot. No privileged intents needed. Invite with the
-   `applications.commands` and `bot` scopes, plus *Send Messages* and
-   *Embed Links*.
-2. **PandaScore API key** — from the [pandascore.co](https://pandascore.co) dashboard.
+You need a **Discord bot token**
+([Developer Portal](https://discord.com/developers/applications) → your app →
+Bot; no privileged intents) and a **PandaScore API key**
+([pandascore.co](https://pandascore.co)).
 
-## 💻 Local development
+Invite the bot with the `bot` and `applications.commands` scopes, plus *Send
+Messages* and *Embed Links*.
+
+### Unraid
+
+1. Pull `ghcr.io/david4td/aurorabot:latest`.
+2. Add two **Variables**: `DISCORD_TOKEN` and `ESPORTS_API_KEY`.
+3. Add a **Path** (⚠️ Config Type must be *Path*, not *Variable*):
+
+   | Field | Value |
+   |---|---|
+   | Container Path | `/appdata` |
+   | Host Path | `/mnt/user/appdata/aurorabot` |
+   | Access Mode | Read/Write |
+
+> **Don't skip the Path mapping.** Without it the bot still runs but loses all
+> data — alerts, predictions, everything — on every Force Update. If it instead
+> crashes with `unable to open database file`, the host folder is root-owned:
+> ```bash
+> chown -R 1000:1000 /mnt/user/appdata/aurorabot
+> ```
+
+**Compose alternative:** use `docker/docker-compose.yml` with
+`image: ghcr.io/david4td/aurorabot:latest` and an `.env` alongside it.
+
+**Updating:** Docker tab → **AuroraBot** → **Force Update**.
+
+### Local development
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
@@ -202,74 +127,7 @@ cp .env.example .env        # add your token + API key
 python -m src.bot
 ```
 
-Set `DEV_GUILD_IDS` to your test server for instant command sync. Health server
-runs on `http://localhost:8080/health`.
-
-## 🖥️ Unraid
-
-1. In Unraid Docker, pull `ghcr.io/david4td/aurorabot:latest`.
-
-2. **Create fields** in the GUI:
-   - **Variable** `DISCORD_TOKEN` — your token (password-masked)
-   - **Variable** `ESPORTS_API_KEY` — your PandaScore key (password-masked)
-   - **Path** (⚠️ not a Variable — easy to miss):
-
-     | Field | Value |
-     |---|---|
-     | Config Type | **Path** |
-     | Container Path | `/appdata` |
-     | Host Path | `/mnt/user/appdata/aurorabot` |
-     | Access Mode | Read/Write |
-
-   - Everything else is optional (see the config table below).
-
-   > **Skip the Path mapping and the bot still runs — but silently loses all
-   > data on every Force Update.** The image declares `VOLUME ["/appdata"]`, so
-   > Docker creates an *anonymous* volume rather than failing: nothing appears
-   > on your share, and each container recreate starts from an empty database.
-   > Verify with:
-   > ```bash
-   > docker inspect aurorabot --format '{{json .Mounts}}'
-   > ```
-   > You want `"Type":"bind"` with `"Source":"/mnt/user/appdata/aurorabot"`. A
-   > `"Type":"volume"` with a hex name means the mapping is missing.
-   >
-   > If the host directory is root-owned the bot will crash with
-   > `unable to open database file` — it runs as uid 1000:
-   > ```bash
-   > chown -R 1000:1000 /mnt/user/appdata/aurorabot
-   > ```
-
-3. **Apply.** `restart: unless-stopped`, so it survives reboots.
-
-**Compose alternative:** install the Compose Manager plugin, paste
-`docker/docker-compose.yml`, swap `build:` for
-`image: ghcr.io/david4td/aurorabot:latest`, and place your `.env` alongside it.
-
-### Data on disk
-
-```
-/mnt/user/appdata/aurorabot/
-├── aurorabot.db        # users, follows, predictions, alerts, digests
-├── aurorabot.db-wal
-├── aurorabot.db-shm
-└── logos/              # cached team logos, ~10 KB each
-```
-
-`logos/` is a pure cache — deleting it costs one re-download per team. The
-database survives image updates; the schema is applied idempotently on startup
-and column changes are migrated automatically.
-
-### Updating
-
-Docker tab → **AuroraBot** → **Force Update**. Or:
-
-```bash
-docker pull ghcr.io/david4td/aurorabot:latest
-docker compose -f docker/docker-compose.yml up -d
-```
-
----
+Set `DEV_GUILD_IDS` to your test server for instant command sync.
 
 ## ⚙️ Configuration
 
@@ -277,60 +135,30 @@ docker compose -f docker/docker-compose.yml up -d
 |----------|:--------:|---------|-------------|
 | `DISCORD_TOKEN` | ✅ | — | Discord bot token |
 | `ESPORTS_API_KEY` | ✅ | — | PandaScore API key |
-| `DATABASE_PATH` | | `/appdata/aurorabot.db` | SQLite path inside the container |
-| `DEV_GUILD_IDS` | | — | Comma-separated guild IDs for instant command sync |
-| `ALERT_POLL_SECONDS` | | `60` | Match poll interval |
-| `ALERT_LEAD_MINUTES` | | `30` | Minutes before kick-off to post the reminder |
+| `DATABASE_PATH` | | `/appdata/aurorabot.db` | Database location |
+| `DEV_GUILD_IDS` | | — | Guild IDs for instant command sync |
+| `ALERT_LEAD_MINUTES` | | `30` | Minutes before kick-off to remind |
+| `ALERT_POLL_SECONDS` | | `60` | How often to check for matches |
 | `TOP_TIER_ONLY` | | `true` | Restrict to top-tier tournaments |
-| `TIERS` | | `s,a` | Tier grades counting as Tier 1 |
-| `DIGEST_TZ` | | `Australia/Sydney` | Timezone the daily schedule treats as "today" |
-| `DIGEST_HOUR` | | `0` | Local hour the digest posts |
-| `HEALTH_PORT` | | `8080` | Internal health server port |
+| `TIERS` | | `s,a` | Grades counting as Tier 1 |
+| `DIGEST_TZ` | | `Australia/Sydney` | Timezone for "today" |
+| `DIGEST_HOUR` | | `0` | Hour the daily schedule posts |
+| `HEALTH_PORT` | | `8080` | Health server port |
 | `LOG_LEVEL` | | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
 | `PANDASCORE_CS_SLUG` | | `csgo` | Route segment for Counter-Strike |
 
----
-
-## 📁 Layout
-
-```
-src/
-├── bot.py              # entrypoint: config, DB, API, cogs, health
-├── config.py           # env-driven settings
-├── database/           # aiosqlite layer + idempotent schema
-├── services/
-│   ├── pandascore.py   # async API client
-│   ├── emojis.py       # team logo → application emoji cache
-│   └── health.py       # /health server
-├── cogs/               # one module per feature area
-└── utils/              # tiers, regions, schedule, embeds, game catalogue
-docker/                 # Dockerfile, compose, Unraid template, icon
-```
-
-Icon regenerates with `python docker/make_icon.py` (stdlib only, no Pillow).
-
-## 🩺 Health
-
-`GET /health` returns `200` when the gateway is connected and the alert loop has
-run recently, else `503`; Docker's `HEALTHCHECK` uses it. Background loops log
-and swallow exceptions so a PandaScore hiccup never kills the bot, and `SIGTERM`
-shuts down cleanly.
-
 ## 📝 Troubleshooting
 
-- **Nothing happens at all** — the server hasn't picked games yet. Run `/games`.
-- **Empty feeds** — usually the tier filter. Try `TOP_TIER_ONLY=false` to confirm.
+- **Nothing happens at all** — run `/games` first.
+- **Empty feeds** — usually the tier filter; try `TOP_TIER_ONLY=false` to confirm.
 - **No standings** — bracket-only stages have no table; try the group stage.
-- **Commands appear twice** — a leftover global command set alongside a guild
-  one. Restart with `DEV_GUILD_IDS` set; the bot clears the duplicates.
-- **New commands missing** — global sync can take up to an hour. Use
-  `DEV_GUILD_IDS` for instant sync.
+- **New commands missing** — global sync takes up to an hour; set `DEV_GUILD_IDS`.
+- **Commands appear twice** — restart with `DEV_GUILD_IDS` set and the bot clears
+  the duplicates.
 - **Alerts reset on update** — the `/appdata` Path mapping is missing (see above).
-- **PandaScore slugs change occasionally.** If one game stops returning data,
-  check the [docs](https://developers.pandascore.co) and adjust
-  `src/utils/games.py` (or `PANDASCORE_CS_SLUG`).
 
-`LOG_LEVEL=DEBUG` is usable — noisy third-party loggers are pinned down.
+`GET /health` returns `200` when everything's running. `LOG_LEVEL=DEBUG` is safe
+to use.
 
 ## 📄 License
 
