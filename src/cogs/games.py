@@ -81,10 +81,18 @@ def _prewarm(cog: "Games", enabled: set[str]) -> None:
 
     Done here rather than lazily so the first `/alerts add` after choosing games
     already has its autocomplete data.
+
+    Never allowed to raise. Warming is an optimisation, and an interaction that
+    dies before its reply shows the user "didn't respond in time" while the
+    selection has *already* been saved — the most confusing failure available.
     """
-    alerts = cog.bot.get_cog("Alerts")
-    if alerts is not None:
-        alerts.prewarm(enabled)
+    directory = getattr(cog.bot, "tourneys", None)
+    if directory is None:
+        return
+    try:
+        directory.prewarm(enabled)
+    except Exception:  # noqa: BLE001 - the panel must reply regardless
+        log.exception("failed to pre-warm tournaments for %s", sorted(enabled))
 
 
 class GameSelect(discord.ui.Select):
@@ -126,11 +134,13 @@ class GameSelect(discord.ui.Select):
             "Guild %s now follows %d game(s), set by %s",
             interaction.guild_id, len(enabled), interaction.user.id,
         )
-        _prewarm(self.cog, enabled)
+        # Reply first: Discord gives an interaction 3 seconds, and warming is
+        # background work the user shouldn't be made to wait on.
         await interaction.response.edit_message(
             embed=status_embed(enabled, editable=True),
             view=GamesView(self.cog, enabled),
         )
+        _prewarm(self.cog, enabled)
 
 
 class FollowAllButton(discord.ui.Button):
@@ -156,11 +166,11 @@ class FollowAllButton(discord.ui.Button):
             known=ALL_KEYS,
             updated_by=interaction.user.id,
         )
-        _prewarm(self.cog, set(ALL_KEYS))
         await interaction.response.edit_message(
             embed=status_embed(set(ALL_KEYS), editable=True),
             view=GamesView(self.cog, set(ALL_KEYS)),
         )
+        _prewarm(self.cog, set(ALL_KEYS))
 
 
 class FollowNoneButton(discord.ui.Button):
