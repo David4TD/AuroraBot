@@ -75,6 +75,8 @@ class AuroraBot(commands.Bot):
             self, self.db, cache_dir=settings.data_dir / "logos"
         )
         self._icons_started = False
+        # Set during setup_hook when syncing globally; consumed once on READY.
+        self._purge_guild_commands = False
         # Shared by /alerts, /live, /upcoming, /results and /predict, so the
         # cascade's warm-up is paid once rather than per cog.
         self.tourneys = TournamentDirectory(self)
@@ -119,10 +121,46 @@ class AuroraBot(commands.Bot):
         else:
             synced = await self.tree.sync()
             self.log.info("Synced %d global commands", len(synced))
+            # Guild cleanup happens in on_ready: the guild list isn't populated
+            # until READY, so there's nothing to iterate over here.
+            self._purge_guild_commands = True
+
+    async def _purge_stale_guild_commands(self) -> None:
+        """Remove per-guild registrations left by an earlier DEV_GUILD_IDS run.
+
+        Discord keeps application commands on its own side, per scope, until
+        something overwrites that scope. Syncing globally never touches the
+        guild scope, so a bot that once booted with DEV_GUILD_IDS and later
+        without it left a full duplicate command set in every dev guild — still
+        listed in the picker, and answered by nothing.
+
+        Pushing an empty local guild tree clears it. One call per guild per
+        boot, which is cheap for the handful of servers this bot serves and
+        never fatal: a failure here costs a stale entry, not a startup.
+        """
+        for guild in self.guilds:
+            try:
+                self.tree.clear_commands(guild=guild)
+                stale = await self.tree.sync(guild=guild)
+                if stale:
+                    self.log.warning(
+                        "Guild %s still had %d guild-scoped command(s) after "
+                        "the purge", guild.id, len(stale),
+                    )
+                else:
+                    self.log.debug("No guild-scoped commands left on %s", guild.id)
+            except discord.HTTPException as exc:
+                self.log.warning(
+                    "Could not clear guild commands on %s: %s", guild.id, exc
+                )
 
     async def on_ready(self) -> None:
         self.health.ready = True
         self.health.beat()
+
+        if getattr(self, "_purge_guild_commands", False):
+            self._purge_guild_commands = False
+            await self._purge_stale_guild_commands()
 
         # Application emojis need application_id, which only arrives with
         # READY — setup_hook runs before that. Guarded so a gateway resume

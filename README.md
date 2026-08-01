@@ -236,8 +236,19 @@ Set `DEV_GUILD_IDS` to your test server for instant command sync.
 - **Empty feeds** — usually the tier filter; try `TOP_TIER_ONLY=false` to confirm.
 - **No standings** — bracket-only stages have no table; try the group stage.
 - **New commands missing** — global sync takes up to an hour; set `DEV_GUILD_IDS`.
-- **Commands appear twice** — restart with `DEV_GUILD_IDS` set and the bot clears
-  the duplicates.
+- **Commands appear twice, or old ones linger** — Discord stores slash commands
+  on its side, per scope, so they stay in the picker even with the container
+  stopped. A global sync never touches guild-scoped registrations, so a bot that
+  once ran with `DEV_GUILD_IDS` and later without it left a duplicate set behind.
+  Startup now clears those automatically; to inspect or purge without starting
+  the bot:
+  ```bash
+  python scripts/purge_commands.py
+  ```
+  It lists what Discord currently holds. Add `--purge-global`, `--purge-guild
+  <id>` or `--purge-all-guilds` to delete. If the stale commands show a
+  *different* bot's name in the picker, it's another application — kick that bot
+  from the server instead.
 - **Alerts reset on update** — the `/appdata` Path mapping is missing (see above).
 
 `GET /health` returns `200` when everything's running. `LOG_LEVEL=DEBUG` is safe
