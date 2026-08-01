@@ -28,6 +28,7 @@ Server* runs `/games` and picks some.
 | **Schedule** | `/schedule` — post today's matches now |
 | **Predictions** | `/predict`, `/mypredictions`, `/leaderboard` |
 | **Profile** | `/profile`, `/follow`, `/unfollow`, `/setgame` |
+| **Settings** | `/settings` — server preferences and resets |
 | **Meta** | `/help`, `/ping` |
 
 Most commands filter **game → tournament → team**, each step optional after the
@@ -102,6 +103,28 @@ channel follows; `/leaderboard tournament:…` picks another, including all-time
 
 When a match goes live the alert shows the split *and* the multiplier each side
 was playing for.
+
+## ⚙️ Per-server settings
+
+`/settings` shows what this server is configured to do and lets *Manage Server*
+change it:
+
+- **Daily schedule time** — the hour and the timezone the digest treats as
+  "today". These used to be bot-wide, so every server got the operator's
+  midnight; now each server picks its own.
+- **Reminder lead** — how long before kick-off alerts fire.
+
+Anything you haven't set shows *(default)* and follows the deployment's
+configuration, so an untouched server behaves exactly as before.
+
+### Resetting
+
+The same panel has **Reset**, scoped to the current server: alerts, games,
+predictions, preferences, or everything. It names the exact number of rows it
+will delete and asks a second time — there's no undo.
+
+Nobody's prediction history in *other* servers is touched, and lifetime points
+survive a reset.
 
 ## 🏆 What "Tier 1" means
 
@@ -197,12 +220,12 @@ Set `DEV_GUILD_IDS` to your test server for instant command sync.
 | `ESPORTS_API_KEY` | ✅ | — | PandaScore API key |
 | `DATABASE_PATH` | | `/appdata/aurorabot.db` | Database location |
 | `DEV_GUILD_IDS` | | — | Guild IDs for instant command sync |
-| `ALERT_LEAD_MINUTES` | | `30` | Minutes before kick-off to remind |
+| `ALERT_LEAD_MINUTES` | | `30` | Default reminder lead (per-server via `/settings`) |
 | `ALERT_POLL_SECONDS` | | `60` | How often to check for matches |
 | `TOP_TIER_ONLY` | | `true` | Restrict to top-tier tournaments |
 | `TIERS` | | `s,a` | Grades counting as Tier 1 |
-| `DIGEST_TZ` | | `Australia/Sydney` | Timezone for "today" |
-| `DIGEST_HOUR` | | `0` | Hour the daily schedule posts |
+| `DIGEST_TZ` | | `Australia/Sydney` | Default timezone (per-server via `/settings`) |
+| `DIGEST_HOUR` | | `0` | Default digest hour (per-server via `/settings`) |
 | `HEALTH_PORT` | | `8080` | Health server port |
 | `LOG_LEVEL` | | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
 | `PANDASCORE_CS_SLUG` | | `csgo` | Route segment for Counter-Strike |

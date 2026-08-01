@@ -66,6 +66,19 @@ CREATE TABLE IF NOT EXISTS guild_games (
     PRIMARY KEY (guild_id, game)
 );
 
+-- ─── Per-guild preferences ──────────────────────────────────────────────────
+-- Overrides for what were env-only, bot-wide settings. A NULL column means
+-- "use the deployment default" — servers in different timezones shouldn't all
+-- get their daily schedule at the operator's midnight.
+CREATE TABLE IF NOT EXISTS guild_settings (
+    guild_id            TEXT PRIMARY KEY,
+    digest_hour         INTEGER,
+    digest_tz           TEXT,
+    alert_lead_minutes  INTEGER,
+    updated_by          TEXT,
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- ─── Alert subscriptions (per guild channel) ────────────────────────────────
 -- A channel subscribes per game, scoped to a team, a tournament, or the whole
 -- (Tier 1) feed for that game. See db.py::_migrate for the upgrade path from

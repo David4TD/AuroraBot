@@ -26,6 +26,7 @@ from ..utils.choices import GAME_CHOICES
 from ..utils.embeds import BRAND, GREEN, match_embed
 from ..utils.games import label_for, rank_by_name, resolve_slug
 from ..utils.guildgames import blocked_message
+from ..utils.guildprefs import alert_lead
 from ..utils.matches import league_id, opponents, team_ids, tournament_id
 from ..utils.predictions import submit_prediction
 from ..utils.scoring import potential_odds
@@ -382,7 +383,9 @@ class Alerts(commands.Cog):
         else:
             target = f"all Tier 1 **{game.name}** matches"
 
-        lead = self.bot.settings.alert_lead_minutes
+        lead = alert_lead(
+            self.bot.settings, await self.bot.db.guild_settings(interaction.guild_id)
+        )
         await interaction.followup.send(
             embed=discord.Embed(
                 description=(
@@ -453,7 +456,7 @@ class Alerts(commands.Cog):
             embed.add_field(name=heading, value="\n".join(lines), inline=False)
 
         footer = (
-            f"Reminders fire {self.bot.settings.alert_lead_minutes} min before "
+            f"Reminders fire {alert_lead(self.bot.settings, await self.bot.db.guild_settings(interaction.guild_id))} min before "
             f"kick-off · /alerts remove to clear any of these"
         )
         if orphans:
@@ -542,7 +545,13 @@ class Alerts(commands.Cog):
         if not subs:
             return
 
-        lead = self.bot.settings.alert_lead_minutes
+        # Lead time is per server, so keep every upcoming match with its
+        # distance from now and let each subscription apply its own window.
+        prefs = await self.bot.db.all_guild_settings()
+        widest = max(
+            [alert_lead(self.bot.settings, p) for p in prefs.values()]
+            + [self.bot.settings.alert_lead_minutes]
+        )
         now = datetime.now(timezone.utc)
 
         # Fetch each subscribed game once, not once per subscription.
@@ -566,13 +575,16 @@ class Alerts(commands.Cog):
                 if begin is None:
                     continue
                 minutes_out = (begin - now).total_seconds() / 60
-                if 0 < minutes_out <= lead:
-                    due.append(match)
+                if 0 < minutes_out <= widest:
+                    due.append((match, minutes_out))
             feeds[game_key] = (running, due)
 
         for sub in subs:
             running, due = feeds.get(sub["game"], ([], []))
-            for match in due:
+            lead = alert_lead(self.bot.settings, prefs.get(str(sub["guild_id"])))
+            for match, minutes_out in due:
+                if minutes_out > lead:
+                    continue      # inside another server's window, not this one
                 await self._announce(sub, match, state="reminder")
             for match in running:
                 await self._announce(sub, match, state="live")
@@ -601,7 +613,10 @@ class Alerts(commands.Cog):
         teams = opponents(match)
         predictable = state == "reminder" and len(teams) >= 2
         if state == "reminder":
-            lead = self.bot.settings.alert_lead_minutes
+            lead = alert_lead(
+                self.bot.settings,
+                await self.bot.db.guild_settings(sub["guild_id"]),
+            )
             content = f"⏰ **Starting in ~{lead} minutes!**"
             if predictable:
                 content += "\n🎲 Pick the winner below — only you see the result."

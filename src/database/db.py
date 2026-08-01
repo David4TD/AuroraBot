@@ -509,6 +509,104 @@ class Database:
             out[row["game"]] = (stamp, rows)
         return out
 
+    # ── per-guild preferences ────────────────────────────────────────────────
+    async def guild_settings(self, guild_id: int | None) -> dict:
+        """A server's overrides. Missing keys mean "use the env default"."""
+        if guild_id is None:
+            return {}
+        cur = await self.conn.execute(
+            "SELECT digest_hour, digest_tz, alert_lead_minutes "
+            "FROM guild_settings WHERE guild_id = ?",
+            (str(guild_id),),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return {}
+        return {k: row[k] for k in row.keys() if row[k] is not None}
+
+    async def set_guild_setting(
+        self, guild_id: int, key: str, value, updated_by: int
+    ) -> None:
+        """Set one override. ``None`` clears it back to the deployment default."""
+        if key not in {"digest_hour", "digest_tz", "alert_lead_minutes"}:
+            raise ValueError(f"unknown guild setting {key!r}")
+        await self.conn.execute(
+            f"""
+            INSERT INTO guild_settings (guild_id, {key}, updated_by)
+            VALUES (?, ?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET
+                {key}      = excluded.{key},
+                updated_by = excluded.updated_by,
+                updated_at = datetime('now')
+            """,  # noqa: S608 - key is checked against a literal allowlist above
+            (str(guild_id), value, str(updated_by)),
+        )
+        await self.conn.commit()
+
+    async def all_guild_settings(self) -> dict[str, dict]:
+        """Every server's overrides, for the loops that run across guilds."""
+        cur = await self.conn.execute("SELECT * FROM guild_settings")
+        out: dict[str, dict] = {}
+        for row in await cur.fetchall():
+            out[row["guild_id"]] = {
+                k: row[k]
+                for k in ("digest_hour", "digest_tz", "alert_lead_minutes")
+                if row[k] is not None
+            }
+        return out
+
+    # ── resets ───────────────────────────────────────────────────────────────
+    async def reset_guild(self, guild_id: int, *, what: str) -> dict[str, int]:
+        """Wipe part of a server's data. Returns what was removed, per table.
+
+        Every statement is scoped by ``guild_id``: a moderator resetting their
+        own server must never be able to touch another's, and these are driven
+        from a Discord component whose values can't be trusted on their own.
+        """
+        gid = str(guild_id)
+        removed: dict[str, int] = {}
+
+        async def wipe(label: str, sql: str, params=(gid,)) -> None:
+            cur = await self.conn.execute(sql, params)
+            if cur.rowcount and cur.rowcount > 0:
+                removed[label] = cur.rowcount
+
+        if what in {"alerts", "all"}:
+            await wipe("alerts", "DELETE FROM alert_subscriptions WHERE guild_id = ?")
+            await wipe("alert messages", "DELETE FROM alert_messages WHERE guild_id = ?")
+            await wipe("digests", "DELETE FROM match_digests WHERE guild_id = ?")
+        if what in {"games", "all"}:
+            await wipe("games", "DELETE FROM guild_games WHERE guild_id = ?")
+        if what in {"predictions", "all"}:
+            # Only this server's picks. A member's history elsewhere, and their
+            # lifetime total on users, are deliberately untouched.
+            await wipe("predictions", "DELETE FROM predictions WHERE guild_id = ?")
+        if what in {"settings", "all"}:
+            await wipe("preferences", "DELETE FROM guild_settings WHERE guild_id = ?")
+
+        # digest_matches hangs off match_digests; the FK cascade needs the
+        # pragma, so clean up explicitly rather than relying on it.
+        await self.conn.execute(
+            "DELETE FROM digest_matches WHERE digest_id NOT IN "
+            "(SELECT id FROM match_digests)"
+        )
+        await self.conn.commit()
+        return removed
+
+    async def guild_summary(self, guild_id: int) -> dict[str, int]:
+        """Row counts behind a reset confirmation, so it says what it'll take."""
+        gid = str(guild_id)
+        out = {}
+        for label, sql in (
+            ("games", "SELECT COUNT(*) AS n FROM guild_games WHERE guild_id = ?"),
+            ("alerts", "SELECT COUNT(*) AS n FROM alert_subscriptions WHERE guild_id = ?"),
+            ("predictions", "SELECT COUNT(*) AS n FROM predictions WHERE guild_id = ?"),
+            ("digests", "SELECT COUNT(*) AS n FROM match_digests WHERE guild_id = ?"),
+        ):
+            cur = await self.conn.execute(sql, (gid,))
+            out[label] = int((await cur.fetchone())["n"])
+        return out
+
     async def remove_subscriptions(self, sub_ids, guild_id: int) -> int:
         """Delete several subscriptions at once. Returns how many went.
 

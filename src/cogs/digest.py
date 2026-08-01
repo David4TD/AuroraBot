@@ -40,6 +40,7 @@ from discord.ext import commands, tasks
 from ..services.pandascore import PandaScoreError
 from ..utils.embeds import BRAND, GREEN
 from ..utils.games import label_for, resolve_slug
+from ..utils.guildprefs import digest_hour, digest_tz
 from ..utils.lineupcard import build_card
 from ..utils.matches import (
     league_id as match_league_id,
@@ -212,7 +213,9 @@ class Digest(commands.Cog):
             return
         posted = 0
         for sub in subs:
-            if await self._post_digest(sub, local_today(self.bot.settings.digest_tz),
+            tz = digest_tz(self.bot.settings,
+                           await self.bot.db.guild_settings(interaction.guild_id))
+            if await self._post_digest(sub, local_today(tz),
                                       force=True):
                 posted += 1
         await interaction.followup.send(
@@ -230,23 +233,24 @@ class Digest(commands.Cog):
             log.exception("digest sweep failed")
 
     async def _sweep_once(self) -> None:
-        settings = self.bot.settings
-        tz = settings.digest_tz
-        now = local_now(tz)
-        if now.hour < settings.digest_hour:
-            return  # today's post isn't due yet
-
-        today = local_today(tz)
         subs = [s for s in await self.bot.db.all_subscriptions() if _digestable(s)]
         if not subs:
             return
 
         # Respect each server's /games selection, same as the alert poll.
         enabled = await self.bot.db.all_enabled_games()
+        # Hour and timezone are per server, so "is it due yet" is answered once
+        # per guild rather than once for the whole bot.
+        prefs = await self.bot.db.all_guild_settings()
         for sub in subs:
-            if sub["game"] not in enabled.get(str(sub["guild_id"]), frozenset()):
+            gid = str(sub["guild_id"])
+            if sub["game"] not in enabled.get(gid, frozenset()):
                 continue
-            await self._post_digest(sub, today)
+            over = prefs.get(gid)
+            tz = digest_tz(self.bot.settings, over)
+            if local_now(tz).hour < digest_hour(self.bot.settings, over):
+                continue          # that server's post isn't due yet
+            await self._post_digest(sub, local_today(tz))
 
         await self.bot.db.prune_digests(days=PRUNE_AFTER_DAYS)
 

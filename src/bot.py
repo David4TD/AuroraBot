@@ -26,6 +26,7 @@ from .services.tourneys import TournamentDirectory
 COGS = [
     "src.cogs.meta",
     "src.cogs.games",
+    "src.cogs.settings",
     "src.cogs.scores",
     "src.cogs.standings",
     "src.cogs.analytics",
