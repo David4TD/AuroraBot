@@ -23,16 +23,14 @@ from discord import app_commands
 from discord.ext import commands
 
 from ..services.pandascore import PandaScoreError
-from ..services.tourneys import (
-    ROLE_LABEL, ROLE_ORDER, match_has_team, match_in_target,
-)
+from ..services.tourneys import match_has_team, match_in_target
 from ..utils.choices import GAME_CHOICES
-from ..utils.embeds import BRAND
 from ..utils.games import ALL_GAME_KEYS, label_for, resolve_slug
 from ..utils.guildgames import blocked_message, filter_enabled, no_games_message
+from ..utils.lineupcard import MAX_PLAYERS, build_card, roster_lines  # noqa: F401
 from ..utils.matches import opponents
 from ..utils.pickers import game_of, team_choices, tournament_choices
-from ..utils.regions import event_flag, flag_for_country
+from ..utils.regions import event_flag
 from ..utils.tiers import filter_for
 from ..utils.tournaments import parse_dt
 
@@ -40,51 +38,6 @@ log = logging.getLogger("aurorabot.cogs.lineups")
 
 FETCH_SIZE = 50
 MAX_OPTIONS = 25
-# Enough for a starting five plus a couple of subs; embed fields cap at 1024
-# characters and a long bench pushes the two columns out of alignment.
-MAX_PLAYERS = 7
-
-
-def _line(player: dict) -> str:
-    flag = flag_for_country(player.get("nationality")) or "🏳️"
-    role = ROLE_LABEL.get(player.get("role") or "", "")
-    suffix = f" · {role}" if role else ""
-    return f"{flag} **{player['name']}**{suffix}"
-
-
-def roster_lines(players: list[dict]) -> str:
-    """One line per player: flag, handle, role.
-
-    Roles drive the row order so the two columns read across — Top opposite
-    Top, Support opposite Support. A team carrying two players in one lane
-    would otherwise shunt everything below it down a row and break the
-    alignment, so only the first player per lane goes in the main block; the
-    rest fall to a bench underneath, which is also the more honest reading
-    given the API doesn't say who starts.
-    """
-    if not players:
-        return "_Roster not listed_"
-
-    seen: set[str] = set()
-    starters, bench = [], []
-    for p in players:
-        role = p.get("role")
-        if role in ROLE_ORDER and role not in seen:
-            seen.add(role)
-            starters.append(p)
-        else:
-            bench.append(p)
-
-    starters.sort(key=lambda p: ROLE_ORDER[p["role"]])
-    lines = [_line(p) for p in starters]
-    room = MAX_PLAYERS - len(lines)
-    if bench and room > 0:
-        lines.append("_Bench_" if starters else "")
-        lines += [_line(p) for p in bench[:room]]
-        bench = bench[room:]
-    if bench:
-        lines.append(f"_+{len(bench)} more_")
-    return "\n".join(x for x in lines if x)
 
 
 class MatchSelect(discord.ui.Select):
@@ -135,68 +88,8 @@ class Lineups(commands.Cog):
         )
 
     async def build_card(self, match: dict, game_key: str) -> discord.Embed:
-        """Render both teams' rosters as two aligned columns."""
-        teams = opponents(match)
-        a, b = teams[0], teams[1]
-
-        # Two calls, cached for six hours — the same teams recur across a
-        # tournament, so a busy split settles into no calls at all.
-        roster_a = await self.bot.tourneys.roster(a["id"])
-        roster_b = await self.bot.tourneys.roster(b["id"])
-
-        icons = self.bot.icons
-        flag = event_flag(match)
-        league = (match.get("league") or {}).get("name") or ""
-        serie = (match.get("serie") or {}).get("full_name") or ""
-        stage = (match.get("tournament") or {}).get("name") or ""
-        context = " · ".join(x for x in (league, serie, stage) if x)
-
-        embed = discord.Embed(
-            title=f"🆚 {a['name']} vs {b['name']}"[:256],
-            color=BRAND,
-        )
-
-        starts = parse_dt(match.get("begin_at"))
-        when = f"<t:{int(starts.timestamp())}:F> (<t:{int(starts.timestamp())}:R>)" if starts else "TBD"
-        header = [f"{flag + ' ' if flag else ''}{context}", f"🕒 {when}"]
-
-        bo = match.get("number_of_games")
-        if bo:
-            header.append(f"🎯 Best of {bo}")
-        patch = (match.get("videogame_version") or {}).get("name")
-        if patch:
-            header.append(f"🔧 Patch {patch}")
-        embed.description = "\n".join(header)
-
-        embed.add_field(
-            name=f"{icons.icon(a)} {a['name']}".strip()[:256],
-            value=roster_lines(roster_a),
-            inline=True,
-        )
-        embed.add_field(
-            name=f"{icons.icon(b)} {b['name']}".strip()[:256],
-            value=roster_lines(roster_b),
-            inline=True,
-        )
-
-        streams = [
-            s for s in (match.get("streams_list") or [])
-            if s.get("raw_url")
-        ]
-        if streams:
-            # Official streams first, then whatever else is listed.
-            streams.sort(key=lambda s: (not s.get("official"), not s.get("main")))
-            links = ", ".join(
-                f"[{(s.get('language') or 'watch').upper()}]({s['raw_url']})"
-                for s in streams[:4]
-            )
-            embed.add_field(name="Streams", value=links, inline=False)
-
-        embed.set_footer(
-            text="Current rosters — PandaScore doesn't publish confirmed "
-            "starting lineups, so substitutes may be listed."
-        )
-        return embed
+        """Render the shared pre-match card. See ``utils.lineupcard``."""
+        return await build_card(self.bot, match, game_key)
 
     @app_commands.command(
         name="lineup", description="Pre-match rosters for an upcoming Tier 1 match."

@@ -20,7 +20,7 @@ Server* runs `/games` and picks some.
 | Area | Commands |
 |------|----------|
 | **Games** | `/games` — pick which titles this server follows (**do this first**) |
-| **Live scores** | `/live`, `/upcoming`, `/results` |
+| **Live scores** | `/live`, `/upcoming` (with lineups), `/results` |
 | **Standings** | `/standings <league>` — current splits only |
 | **Analytics** | `/team <name>` — form, win rate, roster, stats links |
 | **Lineups** | `/lineup` — who's playing an upcoming match, by role |
@@ -62,9 +62,10 @@ split (`3/5`). Predictions have closed by then, so nothing is spoiled.
 
 ## 📅 Daily schedule
 
-League and tournament subscriptions get a message at local midnight listing the
-day's matches, each with its own pair of team buttons for predictions. Busy days
-run across a few messages. `/schedule` posts today's immediately.
+League and tournament subscriptions get a message at local midnight with a
+**lineup card per match** — the same card `/lineup` shows — each with its own
+pair of team buttons for predictions. Busy days run across a few messages.
+`/schedule` posts today's immediately.
 
 The first message also carries the **server leaderboard** and the last few
 settled predictions with who called them right.
@@ -122,8 +123,19 @@ Teams show their crest and events show a region flag. Icons warm up in the
 background, so the first view of a new league is plain and fills in over a few
 seconds.
 
-Lineup cards show each team's **current roster** — PandaScore doesn't publish
-confirmed starters, so substitutes may appear.
+## 🧑‍🤝‍🧑 Lineup cards
+
+`/lineup`, `/upcoming` and the daily digest all render the same pre-match card:
+both teams side by side, one row per lane so the columns read across, with
+nationality flags and kick-off time.
+
+`/upcoming` cards the soonest **three** matches and lists the rest as
+one-liners — a card is several times taller than a scoreline. `/live` and
+`/results` keep the compact format, since there a score is what you're after.
+
+Cards show each team's **current roster**. PandaScore doesn't publish confirmed
+starters, so a team carrying a substitute shows it on a *Bench* line rather than
+the card guessing who starts.
 
 ---
 

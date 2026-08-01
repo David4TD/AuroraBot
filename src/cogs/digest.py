@@ -1,8 +1,9 @@
 """Daily schedule digest for tournament alert subscriptions.
 
 At local midnight (``DIGEST_HOUR`` in ``DIGEST_TZ``) every channel subscribed to
-a tournament gets that tournament's matches for the day, each with its own pair
-of team buttons for predicting a winner — one tap, no menu.
+a tournament gets that tournament's matches for the day as **pre-match lineup
+cards** — the same card `/lineup` and `/upcoming` render — each with its own
+pair of team buttons for predicting a winner.
 
 Three design points worth knowing:
 
@@ -27,6 +28,7 @@ that was offline at 00:00 still posts when it comes back.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import datetime
@@ -38,6 +40,7 @@ from discord.ext import commands, tasks
 from ..services.pandascore import PandaScoreError
 from ..utils.embeds import BRAND, GREEN
 from ..utils.games import label_for, resolve_slug
+from ..utils.lineupcard import build_card
 from ..utils.matches import (
     league_id as match_league_id,
     opponents,
@@ -308,21 +311,28 @@ class Digest(commands.Cog):
         ]
         first_message = None
         for part, chunk in enumerate(chunks):
-            embed = self._build_embed(
+            start = part * MATCHES_PER_MESSAGE
+            header = self._build_header(
                 sub, today, chunk,
-                start=part * MATCHES_PER_MESSAGE,
-                total=len(matches),
-                part=part,
-                parts=len(chunks),
+                total=len(matches), part=part, parts=len(chunks),
             )
             if part == 0:
                 await self._add_standings(
-                    embed, sub["guild_id"], _target_id(sub), _target_name(sub)
+                    header, sub["guild_id"], _target_id(sub), _target_name(sub)
                 )
+            # The same pre-match card /lineup and /upcoming use, one per match.
+            # Rosters are fetched concurrently and cached six hours, so a
+            # tournament's second day costs nothing.
+            cards = await asyncio.gather(
+                *(build_card(self.bot, m, sub["game"]) for m, _ in chunk)
+            )
+            for n, card in enumerate(cards, start=start + 1):
+                # Numbered to match the vote buttons underneath.
+                card.title = f"{n}. {card.title}"[:256]
             try:
                 message = await channel.send(
-                    embed=embed,
-                    view=self._vote_view(digest_id, chunk, part * MATCHES_PER_MESSAGE),
+                    embeds=[header, *cards],
+                    view=self._vote_view(digest_id, chunk, start),
                 )
             except discord.Forbidden:
                 log.warning("digest: missing permission to post in %s", channel_id)
@@ -395,33 +405,22 @@ class Digest(commands.Cog):
         out.sort(key=lambda pair: parse_dt(pair[0].get("begin_at")) or datetime.max)
         return out[:MAX_MATCHES]
 
-    def _build_embed(
-        self, sub, today, chunk, *, start: int, total: int, part: int, parts: int
+    def _build_header(
+        self, sub, today, chunk, *, total: int, part: int, parts: int
     ) -> discord.Embed:
+        """The banner above the day's cards.
+
+        The old flat list of matchups lived here; each match now gets its own
+        lineup card underneath, so repeating them would just be duplication.
+        """
         name = _target_name(sub) or "Tournament"
         flag = region_flag(name) or ""
-        icons = self.bot.icons
-
-        lines = []
-        for offset, (match, (a, b)) in enumerate(chunk):
-            starts = parse_dt(match.get("begin_at"))
-            # Discord renders <t:…:t> in each viewer's own timezone.
-            stamp = f"<t:{int(starts.timestamp())}:t>" if starts else "TBD"
-            icon_a, icon_b = icons.icon(a), icons.icon(b)
-            lines.append(
-                f"**{start + offset + 1}.** {stamp} · "
-                f"{icon_a} **{a['name']}** vs {icon_b} **{b['name']}**".replace(
-                    "  ", " "
-                )
-            )
 
         title = f"📅 Today · {flag} {name}".strip()
         if parts > 1:
             title = f"{title} ({part + 1}/{parts})"
 
-        embed = discord.Embed(
-            title=title, description="\n".join(lines), color=BRAND
-        )
+        embed = discord.Embed(title=title, color=BRAND)
         embed.add_field(
             name="Matches",
             value=f"{len(chunk)} of {total}" if parts > 1 else str(total),

@@ -11,6 +11,7 @@ has no server-side tier filter on the match endpoints.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import discord
@@ -23,6 +24,8 @@ from ..utils.choices import GAME_CHOICES
 from ..utils.embeds import RED, match_embed
 from ..utils.games import ALL_GAME_KEYS, label_for, resolve_slug
 from ..utils.guildgames import blocked_message, filter_enabled, no_games_message
+from ..utils.lineupcard import build_card
+from ..utils.matches import opponents
 from ..utils.pickers import game_of, team_choices, tournament_choices
 from ..utils.tiers import NO_TOP_TIER_MATCHES, filter_for
 
@@ -32,6 +35,9 @@ log = logging.getLogger("aurorabot.cogs.scores")
 # render (Discord caps a message at 10 embeds).
 FETCH_SIZE = 50
 SHOW = 5
+# Full lineup cards for the soonest few; a card is roughly four times the
+# height of a scoreline, so showing five would bury the channel.
+UPCOMING_CARDS = 3
 
 DESCRIBE = {
     "game": "Which game. Defaults to your `/setgame` pick.",
@@ -223,9 +229,24 @@ class Scores(commands.Cog):
                 self._empty(filters, "upcoming matches") + f"\n{NO_TOP_TIER_MATCHES}"
             )
             return
-        embeds = [match_embed(m, filters.game_key, self.bot.icons) for m in matches[:SHOW]]
+        # Same pre-match card as /lineup: nothing has happened yet, so rosters
+        # are the interesting content. /live and /results keep the compact
+        # scoreline — there a result is what people are looking for.
+        playable = [m for m in matches if len(opponents(m)) >= 2]
+        cards = await asyncio.gather(
+            *(build_card(self.bot, m, filters.game_key)
+              for m in playable[:UPCOMING_CARDS])
+        )
+        # A card is several times taller than a scoreline, so the rest stay as
+        # one-liners rather than pushing the channel out of the window.
+        rest = playable[UPCOMING_CARDS:SHOW] + [
+            m for m in matches if len(opponents(m)) < 2
+        ][:SHOW]
+        embeds = list(cards) + [
+            match_embed(m, filters.game_key, self.bot.icons) for m in rest[:SHOW]
+        ]
         await interaction.followup.send(
-            content=f"🗓️ **Upcoming** · {filters.describe()}", embeds=embeds
+            content=f"🗓️ **Upcoming** · {filters.describe()}", embeds=embeds[:10]
         )
 
     @app_commands.command(
