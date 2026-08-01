@@ -1,16 +1,22 @@
 """Daily schedule digest for tournament alert subscriptions.
 
 At local midnight (``DIGEST_HOUR`` in ``DIGEST_TZ``) every channel subscribed to
-a tournament gets one message listing that tournament's matches for the day,
-with a dropdown for predicting winners.
+a tournament gets that tournament's matches for the day, each with its own pair
+of team buttons for predicting a winner — one tap, no menu.
 
-Two design points worth knowing:
+Three design points worth knowing:
 
-* **The dropdown is persistent.** It's a :class:`discord.ui.DynamicItem`, so the
-  digest keeps working after a restart without re-registering per-message views —
-  the interaction is routed by its ``custom_id``, and the matches are re-read
-  from ``digest_matches``. Picking a match replies *ephemerally* with two team
-  buttons, so voting never clutters the channel.
+* **One match per action row.** Discord allows five action rows of five buttons,
+  and a match needs two, so a message carries at most **five** matches. A busier
+  day is split across follow-up messages and each message's embed lists only the
+  matches its own buttons cover — orphaned buttons under a longer list would be
+  impossible to map. Matches stay numbered across the split so "3." means the
+  same match in the embed and on the button.
+* **The buttons are persistent.** Each is a :class:`discord.ui.DynamicItem`
+  carrying its digest and match ids in the ``custom_id``, so the digest keeps
+  working after a restart with no per-message view to re-register; the teams are
+  re-read from ``digest_matches`` at click time. Replies are *ephemeral*, so
+  voting neither clutters the channel nor needs a DM.
 * **Posting is claimed before it happens.** The ``match_digests`` UNIQUE key on
   (channel, subscription, local date) is taken first, so neither the 5-minute
   catch-up sweep nor a restart can post the same day twice. A crash between
@@ -39,7 +45,7 @@ from ..utils.matches import (
 )
 from ..utils.predictions import Outcome, submit_prediction
 from ..utils.regions import region_flag
-from ..utils.schedule import iso_date, local_hhmm, local_now, local_today, within_day
+from ..utils.schedule import iso_date, local_now, local_today, within_day
 from ..utils.tiers import filter_for
 from ..utils.tournaments import parse_dt
 
@@ -47,7 +53,10 @@ log = logging.getLogger("aurorabot.cogs.digest")
 
 SWEEP_MINUTES = 5
 FETCH_SIZE = 50
-MAX_ROWS = 25          # Discord's hard cap on select options
+# A view holds 5 action rows; one match per row (two team buttons) is what makes
+# the pairing readable, so a message carries 5 matches and the rest spill over.
+MATCHES_PER_MESSAGE = 5
+MAX_MATCHES = 25       # ceiling on a single day, i.e. at most 5 messages
 PRUNE_AFTER_DAYS = 14
 
 
@@ -82,51 +91,43 @@ def _teams_of(match: dict) -> tuple[dict, dict] | None:
     return (teams[0], teams[1]) if len(teams) >= 2 else None
 
 
-class TeamVoteButton(discord.ui.Button):
-    """One team on the ephemeral vote prompt."""
-
-    def __init__(self, cog: "Digest", row, team: dict, opponent: dict) -> None:
-        super().__init__(label=team["name"][:80], style=discord.ButtonStyle.primary)
-        self.cog = cog
-        self.row_ = row
-        self.team = team
-        self.opponent = opponent
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        _, message = await submit_prediction(
-            self.cog.bot.db,
-            user_id=interaction.user.id,
-            display_name=interaction.user.display_name,
-            match_id=int(self.row_["match_id"]),
-            game=None,
-            team=self.team,
-            opponent=self.opponent,
-            begin_at=self.row_["begin_at"],
-        )
-        await interaction.response.edit_message(content=message, view=None)
-
-
-class DigestSelect(
-    discord.ui.DynamicItem[discord.ui.Select],
-    template=r"aurora:digest:(?P<digest_id>[0-9]+)",
+class DigestVoteButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"aurora:dvote:(?P<digest_id>[0-9]+):(?P<match_id>[0-9]+):(?P<side>[01])",
 ):
-    """Match picker on a digest message.
+    """One team's button for one match on a digest message.
 
-    Rebuilt from its ``custom_id`` on every interaction, which is what lets it
-    survive restarts. The options Discord already stored on the message are
-    enough to render it; only the *selected* value matters on the way back.
+    A digest carries several matches, so — unlike the reminder buttons, which can
+    infer everything from the message they hang on — the match has to be encoded
+    here. Digest id, match id and side fit comfortably inside the 100-character
+    ``custom_id`` budget, and the *teams* are still read back from
+    ``digest_matches`` at click time rather than trusted from the label, so a
+    renamed team can't corrupt a pick.
+
+    Rebuilt from its ``custom_id`` on every click, so it survives restarts with
+    no view to re-register. Replies are **ephemeral**.
     """
 
-    def __init__(self, digest_id: int, options: list[discord.SelectOption] | None = None) -> None:
+    def __init__(
+        self,
+        digest_id: int,
+        match_id: int,
+        side: int,
+        *,
+        label: str = "…",
+        emoji=None,
+        row: int | None = None,
+    ) -> None:
         self.digest_id = digest_id
+        self.match_id = match_id
+        self.side = side
         super().__init__(
-            discord.ui.Select(
-                custom_id=f"aurora:digest:{digest_id}",
-                placeholder="Pick a match to predict…",
-                options=options
-                or [discord.SelectOption(label="No matches", value="none")],
-                min_values=1,
-                max_values=1,
+            discord.ui.Button(
+                label=label[:80],
+                style=discord.ButtonStyle.primary,
+                custom_id=f"aurora:dvote:{digest_id}:{match_id}:{side}",
+                emoji=emoji,
+                row=row,
             )
         )
 
@@ -134,21 +135,15 @@ class DigestSelect(
     async def from_custom_id(
         cls,
         interaction: discord.Interaction,
-        item: discord.ui.Select,
+        item: discord.ui.Button,
         match: re.Match[str],
-    ) -> "DigestSelect":
-        return cls(int(match["digest_id"]))
+    ) -> "DigestVoteButton":
+        return cls(
+            int(match["digest_id"]), int(match["match_id"]), int(match["side"])
+        )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        value = self.item.values[0]
-        if value == "none":
-            await interaction.response.send_message(
-                "Nothing to predict on this one.", ephemeral=True
-            )
-            return
-
-        db = interaction.client.db
-        row = await db.digest_match(self.digest_id, int(value))
+        row = await interaction.client.db.digest_match(self.digest_id, self.match_id)
         if row is None:
             await interaction.response.send_message(
                 "That match is no longer on this schedule.", ephemeral=True
@@ -157,19 +152,19 @@ class DigestSelect(
 
         team_a = {"id": int(row["team_a_id"]), "name": row["team_a_name"]}
         team_b = {"id": int(row["team_b_id"]), "name": row["team_b_name"]}
+        team, opponent = (team_a, team_b) if self.side == 0 else (team_b, team_a)
 
-        cog = interaction.client.get_cog("Digest")
-        view = discord.ui.View(timeout=120)
-        view.add_item(TeamVoteButton(cog, row, team_a, team_b))
-        view.add_item(TeamVoteButton(cog, row, team_b, team_a))
-
-        starts = parse_dt(row["begin_at"])
-        when = f" — starts <t:{int(starts.timestamp())}:t>" if starts else ""
-        await interaction.response.send_message(
-            f"Who wins **{team_a['name']}** vs **{team_b['name']}**?{when}",
-            view=view,
-            ephemeral=True,
+        _, message = await submit_prediction(
+            interaction.client.db,
+            user_id=interaction.user.id,
+            display_name=interaction.user.display_name,
+            match_id=self.match_id,
+            game=None,
+            team=team,
+            opponent=opponent,
+            begin_at=row["begin_at"],
         )
+        await interaction.response.send_message(message, ephemeral=True)
 
 
 class Digest(commands.Cog):
@@ -297,25 +292,61 @@ class Digest(commands.Cog):
         ]
         await self.bot.db.add_digest_matches(digest_id, stored)
 
-        embed = self._build_embed(sub, today, matches)
-        view = discord.ui.View(timeout=None)
-        view.add_item(DigestSelect(digest_id, self._options(matches)))
+        chunks = [
+            matches[i:i + MATCHES_PER_MESSAGE]
+            for i in range(0, len(matches), MATCHES_PER_MESSAGE)
+        ]
+        first_message = None
+        for part, chunk in enumerate(chunks):
+            embed = self._build_embed(
+                sub, today, chunk,
+                start=part * MATCHES_PER_MESSAGE,
+                total=len(matches),
+                part=part,
+                parts=len(chunks),
+            )
+            try:
+                message = await channel.send(
+                    embed=embed,
+                    view=self._vote_view(digest_id, chunk, part * MATCHES_PER_MESSAGE),
+                )
+            except discord.Forbidden:
+                log.warning("digest: missing permission to post in %s", channel_id)
+                return first_message is not None
+            except discord.HTTPException as exc:
+                log.warning("digest: failed to post in %s: %s", channel_id, exc)
+                return first_message is not None
+            if first_message is None:
+                first_message = message
 
-        try:
-            message = await channel.send(embed=embed, view=view)
-        except discord.Forbidden:
-            log.warning("digest: missing permission to post in %s", channel_id)
-            return False
-        except discord.HTTPException as exc:
-            log.warning("digest: failed to post in %s: %s", channel_id, exc)
-            return False
-
-        await self.bot.db.set_digest_message(digest_id, message.id)
+        await self.bot.db.set_digest_message(digest_id, first_message.id)
         log.info(
-            "Posted digest %s to channel %s (%d matches, %s)",
-            digest_id, channel_id, len(matches), date_key,
+            "Posted digest %s to channel %s (%d matches in %d message(s), %s)",
+            digest_id, channel_id, len(matches), len(chunks), date_key,
         )
         return True
+
+    def _vote_view(self, digest_id: int, chunk, start: int) -> discord.ui.View:
+        """One action row per match: its two teams, side by side."""
+        view = discord.ui.View(timeout=None)
+        icons = self.bot.icons
+        for row, (match, (a, b)) in enumerate(chunk):
+            match_id = int(match["id"])
+            number = start + row + 1
+            for side, team in ((0, a), (1, b)):
+                view.add_item(
+                    DigestVoteButton(
+                        digest_id,
+                        match_id,
+                        side,
+                        # Numbered to match the embed line, so a team playing
+                        # twice in one day still maps to the right row.
+                        label=f"{number}. {team['name']}",
+                        emoji=icons.partial(team),
+                        row=row,
+                    )
+                )
+        return view
 
     async def _todays_matches(self, sub, today) -> list[tuple[dict, tuple[dict, dict]]]:
         """Tier-1 matches for this subscription's tournament falling on *today*."""
@@ -348,56 +379,46 @@ class Digest(commands.Cog):
             out.append((match, teams))
 
         out.sort(key=lambda pair: parse_dt(pair[0].get("begin_at")) or datetime.max)
-        return out[:MAX_ROWS]
+        return out[:MAX_MATCHES]
 
-    def _build_embed(self, sub, today, matches) -> discord.Embed:
-        tz = self.bot.settings.digest_tz
+    def _build_embed(
+        self, sub, today, chunk, *, start: int, total: int, part: int, parts: int
+    ) -> discord.Embed:
         name = _target_name(sub) or "Tournament"
         flag = region_flag(name) or ""
         icons = self.bot.icons
 
         lines = []
-        for match, (a, b) in matches:
+        for offset, (match, (a, b)) in enumerate(chunk):
             starts = parse_dt(match.get("begin_at"))
-            # Discord renders <t:…:t> in each viewer's own timezone; the local
-            # time in brackets anchors it to the digest's day.
+            # Discord renders <t:…:t> in each viewer's own timezone.
             stamp = f"<t:{int(starts.timestamp())}:t>" if starts else "TBD"
             icon_a, icon_b = icons.icon(a), icons.icon(b)
             lines.append(
-                f"{stamp} · {icon_a} **{a['name']}** vs {icon_b} **{b['name']}**".replace(
+                f"**{start + offset + 1}.** {stamp} · "
+                f"{icon_a} **{a['name']}** vs {icon_b} **{b['name']}**".replace(
                     "  ", " "
                 )
             )
 
+        title = f"📅 Today · {flag} {name}".strip()
+        if parts > 1:
+            title = f"{title} ({part + 1}/{parts})"
+
         embed = discord.Embed(
-            title=f"📅 Today · {flag} {name}".strip(),
-            description="\n".join(lines),
-            color=BRAND,
+            title=title, description="\n".join(lines), color=BRAND
         )
-        embed.add_field(name="Matches", value=str(len(matches)), inline=True)
+        embed.add_field(
+            name="Matches",
+            value=f"{len(chunk)} of {total}" if parts > 1 else str(total),
+            inline=True,
+        )
         embed.add_field(name="Game", value=label_for(sub["game"]), inline=True)
         embed.set_footer(
             text=f"{today:%a %d %b} · times in your local zone · "
-            f"pick a match below to predict a winner"
+            f"tap a team to predict the winner"
         )
         return embed
-
-    def _options(self, matches) -> list[discord.SelectOption]:
-        tz = self.bot.settings.digest_tz
-        options = []
-        for match, (a, b) in matches:
-            starts = parse_dt(match.get("begin_at"))
-            when = local_hhmm(starts, tz) if starts else "TBD"
-            options.append(
-                discord.SelectOption(
-                    label=f"{when}  {a['name']} vs {b['name']}"[:100],
-                    value=str(int(match["id"])),
-                    description=(match.get("tournament") or {}).get("name", "")[:100]
-                    or None,
-                    emoji=self.bot.icons.partial(a),
-                )
-            )
-        return options
 
     @sweep.before_loop
     async def _before(self) -> None:

@@ -92,9 +92,9 @@ class AuroraBot(commands.Bot):
         # dropdowns and match-reminder vote buttons. Each item rebuilds itself
         # from its custom_id, so no per-message view has to be re-registered.
         from .cogs.alerts import VoteButton
-        from .cogs.digest import DigestSelect
+        from .cogs.digest import DigestVoteButton
 
-        self.add_dynamic_items(DigestSelect, VoteButton)
+        self.add_dynamic_items(DigestVoteButton, VoteButton)
 
         # Command sync: instant per-guild in dev, global otherwise.
         #

@@ -78,9 +78,15 @@ Buttons are persistent, so reminders posted before a restart keep working.
 
 ## 📅 Daily schedule
 
-League and tournament subscriptions also get one message at local midnight
-listing the day's matches, with a dropdown for predicting winners. Picking a
-match replies privately, so voting doesn't clutter the channel.
+League and tournament subscriptions also get a message at local midnight listing
+the day's matches. Every match carries **its own pair of team buttons** — one
+tap to predict, no menu to open — and replies are private, so voting doesn't
+clutter the channel.
+
+Discord allows five button rows per message and a match needs two buttons, so a
+day with more than **five** matches is split across follow-up messages. Each
+message lists only the matches its own buttons cover, and numbering runs
+continuously, so "6." is the same match in the list and on the button.
 
 `/schedule` posts the current day immediately. Both need *Manage Server*.
 
