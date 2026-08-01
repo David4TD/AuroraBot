@@ -10,6 +10,9 @@ placeholder — never an exception, which Discord renders as
 """
 from __future__ import annotations
 
+import functools
+import logging
+
 from discord import app_commands
 
 from ..services.tourneys import (
@@ -22,9 +25,31 @@ from ..services.tourneys import (
 from .regions import event_flag, region_flag
 from .tournaments import tournament_label
 
+log = logging.getLogger("aurorabot.pickers")
+
 LOADING_CHOICE = app_commands.Choice(
     name="⏳ Loading… type another character", value=LOADING_SENTINEL
 )
+
+
+def _never_fails(builder):
+    """Turn any error into the loading placeholder.
+
+    Discord renders an exception from an autocomplete as "loading options
+    failed", which tells the user nothing and hides the cause. A placeholder
+    plus a logged traceback is strictly better: the picker stays usable and the
+    real fault is recoverable from the container log.
+    """
+
+    @functools.wraps(builder)
+    async def wrapper(*args, **kwargs):
+        try:
+            return await builder(*args, **kwargs)
+        except Exception:  # noqa: BLE001 - an autocomplete must always answer
+            log.exception("autocomplete %s failed", builder.__name__)
+            return [LOADING_CHOICE]
+
+    return wrapper
 
 
 def game_of(interaction, fallback: str | None = None) -> str | None:
@@ -35,6 +60,7 @@ def game_of(interaction, fallback: str | None = None) -> str | None:
     return game or fallback
 
 
+@_never_fails
 async def tournament_choices(
     directory, game_key: str | None, current: str
 ) -> list[app_commands.Choice[str]]:
@@ -98,6 +124,7 @@ async def tournament_choices(
     return choices
 
 
+@_never_fails
 async def team_choices(
     directory, game_key: str | None, tournament_value: str | None, current: str
 ) -> list[app_commands.Choice[str]]:

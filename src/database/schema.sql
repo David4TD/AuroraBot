@@ -170,6 +170,16 @@ CREATE TABLE IF NOT EXISTS predictions (
     UNIQUE (discord_id, match_id)
 );
 
+-- Tier-1 tournament lists, one row per game, kept so a restart doesn't start
+-- cold. Autocomplete has ~3 seconds total and a League of Legends fetch alone
+-- takes about three, so the first keystroke after a Force Update used to fail
+-- outright. Reading this back is a local sub-millisecond query.
+CREATE TABLE IF NOT EXISTS tournament_cache (
+    game        TEXT PRIMARY KEY,
+    payload     TEXT NOT NULL,          -- JSON array as returned by the filter
+    fetched_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_predictions_status  ON predictions(status);
 CREATE INDEX IF NOT EXISTS idx_predictions_match   ON predictions(match_id);
 CREATE INDEX IF NOT EXISTS idx_alertsub_game       ON alert_subscriptions(game);

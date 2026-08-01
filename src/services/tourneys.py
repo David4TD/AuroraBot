@@ -54,7 +54,13 @@ TOURNAMENT_PREFIX = "T:"
 
 # Discord discards an autocomplete response after 3s and shows "loading options
 # failed"; give up well short of that and offer a placeholder instead.
-AUTOCOMPLETE_BUDGET = 2.0
+#
+# The 3 seconds are counted from when *Discord* sent the request, so the budget
+# has to cover both network hops as well as our own work. 2.0s left only 1.0s
+# for that, and a cold League of Legends fetch takes ~2.9s — so the placeholder
+# itself arrived too late to render and the picker failed outright. 1.2s leaves
+# 1.8s of headroom, which is plenty for a round trip on a home connection.
+AUTOCOMPLETE_BUDGET = 1.2
 LOADING_SENTINEL = "__loading__"
 MAX_CHOICES = 25
 
@@ -86,7 +92,30 @@ class TournamentDirectory:
             filter_for(self.bot.settings, running + upcoming)
         )
         self._cache[game_key] = (datetime.now(timezone.utc), tournaments)
+
+        # Persist so the next restart doesn't pay for this again. Never fatal:
+        # a failed write costs one cold fetch after a restart, nothing more.
+        try:
+            await self.bot.db.save_tournaments(game_key, tournaments)
+        except Exception:  # noqa: BLE001 - the cache is an optimisation
+            log.exception("could not persist tournament cache for %s", game_key)
         return tournaments
+
+    async def load_persisted(self) -> int:
+        """Seed the in-memory cache from disk. Returns how many games loaded.
+
+        Called once at startup, before anything can ask for a picker. Entries
+        are loaded regardless of age: a stale list beats an empty one, and the
+        background warm replaces it within seconds.
+        """
+        try:
+            stored = await self.bot.db.load_tournaments()
+        except Exception:  # noqa: BLE001 - only ever makes startup slower
+            log.exception("could not read the persisted tournament cache")
+            return 0
+        for game_key, (fetched_at, rows) in stored.items():
+            self._cache.setdefault(game_key, (fetched_at, rows))
+        return len(stored)
 
     async def current(
         self, game_key: str, *, wait: float | None = None
@@ -99,9 +128,10 @@ class TournamentDirectory:
         causes one request and a caller giving up doesn't cancel the warm-up.
         """
         cached = self._cache.get(game_key)
-        if cached and (
+        fresh = cached is not None and (
             datetime.now(timezone.utc) - cached[0]
-        ).total_seconds() < CACHE_SECONDS:
+        ).total_seconds() < CACHE_SECONDS
+        if fresh:
             return cached[1]
 
         task = self._warming.get(game_key)
@@ -111,10 +141,19 @@ class TournamentDirectory:
 
         if wait is None:
             return await task
+
+        # Stale but present beats waiting: hand back what we have and let the
+        # refresh land in the background. Tournament lists change over days, so
+        # a few-hours-old list is still correct enough to pick from — and this
+        # is what makes the picker instant after a restart, now that the cache
+        # is restored from disk.
+        if cached is not None:
+            return cached[1]
+
         try:
             return await asyncio.wait_for(asyncio.shield(task), timeout=wait)
         except (asyncio.TimeoutError, PandaScoreError):
-            return cached[1] if cached else None
+            return None
 
     def prewarm(self, game_keys) -> None:
         """Start warming these games without waiting on the result."""

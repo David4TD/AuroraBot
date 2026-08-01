@@ -7,7 +7,9 @@ Unraid appdata volume.
 """
 from __future__ import annotations
 
+import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 import aiosqlite
@@ -423,6 +425,43 @@ class Database:
             return True
         except aiosqlite.IntegrityError:
             return False  # duplicate subscription
+
+    # ── tournament cache ─────────────────────────────────────────────────────
+    async def save_tournaments(self, game: str, rows: list[dict]) -> None:
+        """Persist a game's tournament list so a restart starts warm."""
+        await self.conn.execute(
+            """
+            INSERT INTO tournament_cache (game, payload, fetched_at)
+            VALUES (?, ?, datetime('now'))
+            ON CONFLICT(game) DO UPDATE SET
+                payload    = excluded.payload,
+                fetched_at = excluded.fetched_at
+            """,
+            (game, json.dumps(rows)),
+        )
+        await self.conn.commit()
+
+    async def load_tournaments(self) -> dict[str, tuple[datetime, list[dict]]]:
+        """Every cached tournament list, as ``{game: (fetched_at, rows)}``.
+
+        A row that won't parse is skipped rather than raising — a corrupt cache
+        should cost one cold fetch, not a failed startup.
+        """
+        cur = await self.conn.execute(
+            "SELECT game, payload, fetched_at FROM tournament_cache"
+        )
+        out: dict[str, tuple[datetime, list[dict]]] = {}
+        for row in await cur.fetchall():
+            try:
+                rows = json.loads(row["payload"])
+                stamp = datetime.fromisoformat(row["fetched_at"]).replace(
+                    tzinfo=timezone.utc
+                )
+            except (ValueError, TypeError):
+                log.warning("discarding unreadable tournament cache for %s", row["game"])
+                continue
+            out[row["game"]] = (stamp, rows)
+        return out
 
     async def remove_subscriptions(self, sub_ids, guild_id: int) -> int:
         """Delete several subscriptions at once. Returns how many went.

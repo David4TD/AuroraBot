@@ -138,8 +138,17 @@ class AuroraBot(commands.Bot):
             # of racing Discord's 3-second deadline. Nothing to do until someone
             # has run /games.
             try:
+                # Restore last run's lists first. This is what makes the very
+                # first autocomplete after a Force Update instant instead of
+                # racing a ~3-second League of Legends fetch it cannot win.
+                restored = await self.tourneys.load_persisted()
+                if restored:
+                    self.log.info("Restored cached tournaments for %d game(s)", restored)
+
                 games = await self.db.distinct_enabled_games()
                 if games:
+                    # Refresh in the background regardless: restored lists are
+                    # served immediately, then quietly replaced.
                     self.tourneys.prewarm(games)
                     self.log.info("Pre-warming tournaments for %s", ", ".join(sorted(games)))
                 else:
