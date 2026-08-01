@@ -28,6 +28,8 @@ from ..utils.games import label_for, rank_by_name, resolve_slug
 from ..utils.guildgames import blocked_message
 from ..utils.matches import league_id, opponents, team_ids, tournament_id
 from ..utils.predictions import submit_prediction
+from ..utils.scoring import potential_odds
+from ..utils.stakes import stake_panel
 from ..utils.regions import event_flag, region_flag
 from ..utils.tiers import filter_for
 from ..utils.pickers import game_of, tournament_choices
@@ -112,8 +114,11 @@ class VoteButton(
             opponent=opponent,
             begin_at=row["begin_at"],
             guild_id=interaction.guild_id,
+            tournament_id=row["tournament_id"],
+            tournament_name=row["tournament_name"],
         )
-        await interaction.response.send_message(message, ephemeral=True)
+        view = await stake_panel(db, interaction.user.id, int(row["match_id"]))
+        await interaction.response.send_message(message, view=view, ephemeral=True)
 
 
 SCOPE_ICON = {"team": "👥", "league": "🏅", "tournament": "🏆", "game": "🎮"}
@@ -661,11 +666,15 @@ class Alerts(commands.Cog):
                 if int(p["predicted_team_id"]) == int(team["id"])
             ]
             share = f"{len(backers)}/{len(picks)}"
+            # Predictions are closed, so the multiplier is settled — showing it
+            # is what makes backing the unpopular side feel like a call.
+            odds = potential_odds(len(backers), len(picks))
+            price = f" · ×{odds:.1f}" if odds > 1.0 else ""
             value = ", ".join(backers[:12]) or "_Nobody_"
             if len(backers) > 12:
                 value += f" _+{len(backers) - 12} more_"
             embed.add_field(
-                name=f"{icons.icon(team)} {team['name']} · {share}".strip()[:256],
+                name=f"{icons.icon(team)} {team['name']} · {share}{price}".strip()[:256],
                 value=value[:1024],
                 inline=True,
             )
@@ -688,6 +697,8 @@ class Alerts(commands.Cog):
             team_a=(teams[0]["id"], teams[0]["name"]),
             team_b=(teams[1]["id"], teams[1]["name"]),
             begin_at=match.get("begin_at"),
+            tournament_id=tournament_id(match),
+            tournament_name=(match.get("tournament") or {}).get("name"),
         )
 
     @poll_loop.before_loop

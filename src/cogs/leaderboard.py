@@ -22,17 +22,43 @@ class Leaderboard(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
+    async def _board_ac(self, interaction: discord.Interaction, current: str):
+        """Tournaments this server has actually predicted on, plus All-time."""
+        rows = await self.bot.db.tournaments_with_predictions(interaction.guild_id)
+        query = (current or "").lower()
+        choices = [app_commands.Choice(name="🏆 All-time (every tournament)", value="all")]
+        for r in rows:
+            name = r["tournament_name"] or f"Tournament {r['tournament_id']}"
+            if query and query not in name.lower():
+                continue
+            choices.append(
+                app_commands.Choice(
+                    name=f"{name} · {r['picks']} picks"[:100],
+                    value=str(int(r["tournament_id"])),
+                )
+            )
+        return choices[:25]
+
     @app_commands.command(
-        name="leaderboard", description="Top predictors in this server."
+        name="leaderboard", description="Top predictors for a tournament."
     )
+    @app_commands.describe(
+        tournament="Which board. Defaults to what this channel follows."
+    )
+    @app_commands.autocomplete(tournament=_board_ac)
     @app_commands.guild_only()
-    async def leaderboard(self, interaction: discord.Interaction) -> None:
-        rows = await self.bot.db.guild_leaderboard(interaction.guild_id, limit=TOP_N)
+    async def leaderboard(
+        self, interaction: discord.Interaction, tournament: str | None = None
+    ) -> None:
+        target_id, title = await self._resolve_board(interaction, tournament)
+        rows = await self.bot.db.tournament_leaderboard(
+            interaction.guild_id, target_id, limit=TOP_N
+        )
         if not rows:
             await interaction.response.send_message(
-                "No one's on the board yet — a pick only scores once the match "
-                "finishes. Make one with `/predict`, or tap a team on a match "
-                "reminder."
+                f"No one's on the **{title}** board yet — a pick only scores "
+                f"once the match finishes. Make one with `/predict`, or tap a "
+                f"team on a match reminder."
             )
             return
 
@@ -49,12 +75,62 @@ class Leaderboard(commands.Cog):
             )
 
         embed = discord.Embed(
-            title="🏅 Prediction leaderboard",
+            title=f"🏅 {title}",
             description="\n".join(lines),
             color=BRAND,
         )
-        embed.set_footer(text="Points earned in this server · earn more with /predict")
+        embed.set_footer(
+            text="Points earned in this server · "
+            "underdog calls pay more · /leaderboard tournament:… for another board"
+        )
         await interaction.response.send_message(embed=embed)
+
+    async def _resolve_board(
+        self, interaction: discord.Interaction, tournament: str | None
+    ) -> tuple[int | None, str]:
+        """Which board to show, and what to call it.
+
+        With nothing specified, the channel's own alert subscription decides —
+        so `/leaderboard` in #lck shows LCK without anyone naming it. Falls back
+        to the server's all-time board when the channel follows nothing.
+        """
+        if tournament == "all":
+            return None, "All-time leaderboard"
+
+        if tournament:
+            if tournament.isdigit():
+                target = int(tournament)
+            else:
+                # Typed text rather than a picked option: match on name.
+                rows = await self.bot.db.tournaments_with_predictions(
+                    interaction.guild_id, limit=100
+                )
+                match = next(
+                    (r for r in rows
+                     if tournament.lower() in str(r["tournament_name"] or "").lower()),
+                    None,
+                )
+                if match is None:
+                    return None, "All-time leaderboard"
+                target = int(match["tournament_id"])
+            return target, await self._name_for(interaction.guild_id, target)
+
+        subs = [
+            s for s in await self.bot.db.list_subscriptions(interaction.guild_id)
+            if int(s["channel_id"]) == interaction.channel_id
+            and s["tournament_id"] is not None
+        ]
+        if subs:
+            target = int(subs[0]["tournament_id"])
+            return target, subs[0]["tournament_name"] or "Tournament"
+        return None, "All-time leaderboard"
+
+    async def _name_for(self, guild_id: int, tournament_id: int) -> str:
+        rows = await self.bot.db.tournaments_with_predictions(guild_id, limit=100)
+        for r in rows:
+            if int(r["tournament_id"]) == tournament_id:
+                return r["tournament_name"] or f"Tournament {tournament_id}"
+        return f"Tournament {tournament_id}"
 
 
 async def setup(bot: commands.Bot) -> None:

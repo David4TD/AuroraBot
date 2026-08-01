@@ -72,13 +72,35 @@ settled predictions with who called them right.
 ## 🎲 Predictions
 
 Pick a winner with `/predict`, or tap a team button on a match reminder or the
-daily schedule. You can change your mind until kick-off, then it locks. A
-correct call is worth **25 points** once the match finishes.
+daily schedule. You can change your mind until kick-off, then it locks.
 
-**Points are per server.** A pick scores in the server you made it in, so
-`/leaderboard` and `/profile` show how you're doing *here* — not a total pooled
-from every other server the bot happens to be in. `/profile` notes your lifetime
-total across all servers in the footer.
+```
+points = stake × underdog × streak
+```
+
+**Underdog.** Priced off your own server's votes, not a bookmaker. If eight
+people back the favourite and two call the upset, the upset pays **3×** and the
+favourite pays **1.25×**. Capped at 3×, and it stays flat until at least three
+people have voted — two people disagreeing isn't a market.
+
+**Streak.** +10% per consecutive correct call before this one, up to **1.5×**.
+A miss resets it.
+
+**Stakes.** Every pick is staked from a **500-point budget per tournament**.
+The default is 10, and the ephemeral confirmation lets you raise it to 25 or 50 —
+so one tap is still a complete play, and picking *which* matches to commit to is
+the actual skill. Run the budget dry and picks still count at a free 5; nobody
+gets locked out.
+
+**Perfect day.** Call every one of a day's matches right (two or more) for a
+**+50** bonus.
+
+Boards are **per tournament, per server**. `/leaderboard` shows whatever the
+channel follows; `/leaderboard tournament:…` picks another, including all-time.
+`/profile` shows your record here, with your lifetime total in the footer.
+
+When a match goes live the alert shows the split *and* the multiplier each side
+was playing for.
 
 ## 🏆 What "Tier 1" means
 

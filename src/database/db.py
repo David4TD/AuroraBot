@@ -122,6 +122,28 @@ class Database:
             )
             await self._conn.commit()
 
+        # Step 5: leaderboards become per tournament, so a pick — and the alert
+        # message a pick can be made from — must remember which one it belongs
+        # to. Existing rows stay NULL and appear only on the all-time board.
+        if prediction_columns and "tournament_id" not in prediction_columns:
+            log.info("Adding tournament columns to predictions…")
+            for ddl in (
+                "ALTER TABLE predictions ADD COLUMN tournament_id INTEGER",
+                "ALTER TABLE predictions ADD COLUMN tournament_name TEXT",
+            ):
+                await self._conn.execute(ddl)
+            await self._conn.commit()
+
+        alert_message_columns = await self._table_columns("alert_messages")
+        if alert_message_columns and "tournament_id" not in alert_message_columns:
+            log.info("Adding tournament columns to alert_messages…")
+            for ddl in (
+                "ALTER TABLE alert_messages ADD COLUMN tournament_id INTEGER",
+                "ALTER TABLE alert_messages ADD COLUMN tournament_name TEXT",
+            ):
+                await self._conn.execute(ddl)
+            await self._conn.commit()
+
     async def _migrate_data(self) -> None:
         """Data migrations, run after schema.sql so every table exists."""
         assert self._conn is not None
@@ -544,6 +566,8 @@ class Database:
         team_a: tuple[int, str],
         team_b: tuple[int, str],
         begin_at: str | None,
+        tournament_id: int | None = None,
+        tournament_name: str | None = None,
     ) -> None:
         """Remember which match an alert message announced, and its two teams.
 
@@ -555,8 +579,9 @@ class Database:
             """
             INSERT OR REPLACE INTO alert_messages
                 (message_id, channel_id, guild_id, match_id, game,
-                 team_a_id, team_a_name, team_b_id, team_b_name, begin_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 team_a_id, team_a_name, team_b_id, team_b_name, begin_at,
+                 tournament_id, tournament_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(message_id),
@@ -569,6 +594,8 @@ class Database:
                 team_b[0],
                 team_b[1],
                 begin_at,
+                tournament_id,
+                tournament_name,
             ),
         )
         await self.conn.commit()
@@ -714,20 +741,25 @@ class Database:
         match_starts_at: str | None,
         stake: int,
         guild_id: int | None = None,
+        tournament_id: int | None = None,
+        tournament_name: str | None = None,
     ) -> bool:
         try:
             await self.conn.execute(
                 """
                 INSERT INTO predictions
-                    (discord_id, guild_id, match_id, game, predicted_team_id,
-                     predicted_team_name, opponent_team_name, match_starts_at, stake)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (discord_id, guild_id, match_id, game, tournament_id,
+                     tournament_name, predicted_team_id, predicted_team_name,
+                     opponent_team_name, match_starts_at, stake)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(discord_id),
                     str(guild_id) if guild_id else None,
                     match_id,
                     game,
+                    tournament_id,
+                    tournament_name,
                     predicted_team_id,
                     predicted_team_name,
                     opponent_team_name,
@@ -775,6 +807,12 @@ class Database:
         )
         await self.conn.commit()
         return cur.rowcount
+
+    async def get_prediction_by_id(self, prediction_id: int) -> aiosqlite.Row | None:
+        cur = await self.conn.execute(
+            "SELECT * FROM predictions WHERE id = ?", (prediction_id,)
+        )
+        return await cur.fetchone()
 
     async def get_open_predictions(self) -> list[aiosqlite.Row]:
         cur = await self.conn.execute(
@@ -864,6 +902,126 @@ class Database:
             (str(guild_id), limit),
         )
         return list(await cur.fetchall())
+
+    # ── stakes, streaks, tournament boards ───────────────────────────────────
+    async def tournament_spend(
+        self, discord_id: int, guild_id: int | None, tournament_id: int | None
+    ) -> int:
+        """Points already committed to this tournament, in this server."""
+        if guild_id is None or tournament_id is None:
+            return 0
+        cur = await self.conn.execute(
+            "SELECT COALESCE(SUM(stake), 0) AS spent FROM predictions "
+            "WHERE discord_id = ? AND guild_id = ? AND tournament_id = ?",
+            (str(discord_id), str(guild_id), tournament_id),
+        )
+        row = await cur.fetchone()
+        return int(row["spent"] or 0)
+
+    async def set_stake(self, prediction_id: int, stake: int) -> None:
+        """Change a stake. Only meaningful while the prediction is open."""
+        await self.conn.execute(
+            "UPDATE predictions SET stake = ? WHERE id = ? AND status = 'open'",
+            (stake, prediction_id),
+        )
+        await self.conn.commit()
+
+    async def current_streak(self, discord_id: int, guild_id: int | None) -> int:
+        """Consecutive wins ending at this member's most recent settled pick.
+
+        Walks back through settled predictions in resolution order and stops at
+        the first loss, so a streak is genuinely consecutive rather than a
+        count of wins.
+        """
+        if guild_id is None:
+            return 0
+        cur = await self.conn.execute(
+            "SELECT status FROM predictions "
+            "WHERE discord_id = ? AND guild_id = ? AND status IN ('won', 'lost') "
+            "ORDER BY resolved_at DESC, id DESC LIMIT 50",
+            (str(discord_id), str(guild_id)),
+        )
+        streak = 0
+        for row in await cur.fetchall():
+            if row["status"] != "won":
+                break
+            streak += 1
+        return streak
+
+    async def tournament_leaderboard(
+        self, guild_id: int, tournament_id: int | None, limit: int = 10
+    ) -> list[aiosqlite.Row]:
+        """Top predictors for one tournament, or the whole server if None."""
+        where = "p.guild_id = ? AND p.status IN ('won', 'lost')"
+        params: list = [str(guild_id)]
+        if tournament_id is not None:
+            where += " AND p.tournament_id = ?"
+            params.append(tournament_id)
+        params.append(limit)
+        cur = await self.conn.execute(
+            f"""
+            SELECT p.discord_id,
+                   COALESCE(u.display_name, 'Someone') AS display_name,
+                   COALESCE(SUM(p.points_awarded), 0) AS points,
+                   SUM(p.status = 'won')  AS won,
+                   SUM(p.status = 'lost') AS lost
+            FROM predictions p
+            LEFT JOIN users u ON u.discord_id = p.discord_id
+            WHERE {where}
+            GROUP BY p.discord_id
+            HAVING won + lost > 0
+            ORDER BY points DESC, won DESC, (won + lost) ASC, display_name
+            LIMIT ?
+            """,  # noqa: S608 - `where` is built from literals only
+            params,
+        )
+        return list(await cur.fetchall())
+
+    async def tournaments_with_predictions(
+        self, guild_id: int, limit: int = 25
+    ) -> list[aiosqlite.Row]:
+        """Tournaments this server has actually predicted on, busiest first."""
+        cur = await self.conn.execute(
+            """
+            SELECT tournament_id, tournament_name, COUNT(*) AS picks
+            FROM predictions
+            WHERE guild_id = ? AND tournament_id IS NOT NULL
+            GROUP BY tournament_id
+            ORDER BY MAX(created_at) DESC
+            LIMIT ?
+            """,
+            (str(guild_id), limit),
+        )
+        return list(await cur.fetchall())
+
+    async def day_predictions(
+        self, discord_id: int, guild_id: int | None, day: str
+    ) -> list[aiosqlite.Row]:
+        """A member's picks for matches starting on *day* (YYYY-MM-DD, UTC).
+
+        Used for the perfect-day bonus. ``match_starts_at`` is the match's own
+        kick-off, so the day is the match day rather than when they clicked.
+        """
+        if guild_id is None:
+            return []
+        cur = await self.conn.execute(
+            "SELECT id, status FROM predictions "
+            "WHERE discord_id = ? AND guild_id = ? AND substr(match_starts_at, 1, 10) = ?",
+            (str(discord_id), str(guild_id), day),
+        )
+        return list(await cur.fetchall())
+
+    async def award_bonus(self, discord_id: int, prediction_id: int, points: int) -> None:
+        """Add bonus points onto an already-settled prediction."""
+        await self.conn.execute(
+            "UPDATE predictions SET points_awarded = points_awarded + ? WHERE id = ?",
+            (points, prediction_id),
+        )
+        await self.conn.execute(
+            "UPDATE users SET points = points + ? WHERE discord_id = ?",
+            (points, str(discord_id)),
+        )
+        await self.conn.commit()
 
     async def guild_stats(self, discord_id: int, guild_id: int | None) -> dict:
         """One member's record in one server: points, wins, settled, open."""

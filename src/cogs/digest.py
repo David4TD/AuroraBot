@@ -44,6 +44,7 @@ from ..utils.matches import (
     tournament_id as match_tournament_id,
 )
 from ..utils.predictions import Outcome, submit_prediction
+from ..utils.stakes import stake_panel
 from ..utils.regions import region_flag
 from ..utils.schedule import iso_date, local_now, local_today, within_day
 from ..utils.tiers import filter_for
@@ -154,6 +155,9 @@ class DigestVoteButton(
         team_b = {"id": int(row["team_b_id"]), "name": row["team_b_name"]}
         team, opponent = (team_a, team_b) if self.side == 0 else (team_b, team_a)
 
+        # The digest knows its tournament; the per-match row doesn't carry it.
+        meta = await interaction.client.db.digest_meta(self.digest_id)
+
         _, message = await submit_prediction(
             interaction.client.db,
             user_id=interaction.user.id,
@@ -164,8 +168,13 @@ class DigestVoteButton(
             opponent=opponent,
             begin_at=row["begin_at"],
             guild_id=interaction.guild_id,
+            tournament_id=meta["tournament_id"] if meta else None,
+            tournament_name=meta["tournament_name"] if meta else None,
         )
-        await interaction.response.send_message(message, ephemeral=True)
+        view = await stake_panel(
+            interaction.client.db, interaction.user.id, self.match_id
+        )
+        await interaction.response.send_message(message, view=view, ephemeral=True)
 
 
 class Digest(commands.Cog):
@@ -307,7 +316,9 @@ class Digest(commands.Cog):
                 parts=len(chunks),
             )
             if part == 0:
-                await self._add_standings(embed, sub["guild_id"])
+                await self._add_standings(
+                    embed, sub["guild_id"], _target_id(sub), _target_name(sub)
+                )
             try:
                 message = await channel.send(
                     embed=embed,
@@ -423,7 +434,9 @@ class Digest(commands.Cog):
         )
         return embed
 
-    async def _add_standings(self, embed, guild_id) -> None:
+    async def _add_standings(
+        self, embed, guild_id, tournament_id=None, tournament_name=None
+    ) -> None:
         """Server leaderboard and how the last few picks went.
 
         Only on the first message of a day — repeating it under every follow-up
@@ -436,7 +449,9 @@ class Digest(commands.Cog):
         if not guild_id:
             return
         try:
-            board = await self.bot.db.guild_leaderboard(int(guild_id), limit=5)
+            board = await self.bot.db.tournament_leaderboard(
+                int(guild_id), tournament_id, limit=5
+            )
             recent = await self.bot.db.recent_results(int(guild_id), limit=5)
         except Exception:  # noqa: BLE001 - the schedule matters more
             log.exception("could not build digest standings for guild %s", guild_id)
@@ -455,7 +470,7 @@ class Digest(commands.Cog):
                     f"{won}W/{lost}L · {rate}"
                 )
             embed.add_field(
-                name="🏆 Leaderboard (this server)",
+                name=f"🏆 {tournament_name or 'Leaderboard'}"[:256],
                 value="\n".join(lines)[:1024],
                 inline=False,
             )

@@ -116,6 +116,8 @@ CREATE TABLE IF NOT EXISTS alert_messages (
     team_b_id   INTEGER NOT NULL,
     team_b_name TEXT NOT NULL,
     begin_at    TEXT,
+    tournament_id   INTEGER,
+    tournament_name TEXT,
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -159,6 +161,10 @@ CREATE TABLE IF NOT EXISTS predictions (
     guild_id        TEXT,                 -- where the pick was made; NULL for DMs
     match_id        INTEGER NOT NULL,
     game            TEXT,
+    -- Leaderboards are per tournament, so a pick has to remember which one it
+    -- belongs to; the match it was made on may be long gone from the API.
+    tournament_id   INTEGER,
+    tournament_name TEXT,
     predicted_team_id   INTEGER NOT NULL,
     predicted_team_name TEXT NOT NULL,
     opponent_team_name  TEXT,
@@ -187,6 +193,7 @@ CREATE TABLE IF NOT EXISTS tournament_cache (
 
 CREATE INDEX IF NOT EXISTS idx_predictions_status  ON predictions(status);
 CREATE INDEX IF NOT EXISTS idx_predictions_match   ON predictions(match_id);
+CREATE INDEX IF NOT EXISTS idx_predictions_board   ON predictions(guild_id, tournament_id, status);
 CREATE INDEX IF NOT EXISTS idx_alertsub_game       ON alert_subscriptions(game);
 CREATE INDEX IF NOT EXISTS idx_followed_user       ON followed_teams(discord_id);
 CREATE INDEX IF NOT EXISTS idx_alerted_at          ON alerted_matches(alerted_at);
