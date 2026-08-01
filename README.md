@@ -13,7 +13,7 @@ the [PandaScore API](https://pandascore.co).
 ## 🚀 Start here
 
 **Games are opt-in.** A new server follows nothing until someone with *Manage
-Server* runs `/games` and picks some. Until then the bot stays quiet.
+Server* runs `/games` and picks some.
 
 ## ✨ Commands
 
