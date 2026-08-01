@@ -133,9 +133,14 @@ nationality flags and kick-off time.
 one-liners — a card is several times taller than a scoreline. `/live` and
 `/results` keep the compact format, since there a score is what you're after.
 
-Cards show each team's **current roster**. PandaScore doesn't publish confirmed
-starters, so a team carrying a substitute shows it on a *Bench* line rather than
-the card guessing who starts.
+Cards show each team's **current roster**, ordered by position — Top, Jungle,
+Mid, Bot, Support for LoL; Carry through Hard support for Dota; Tank/DPS/Support
+for Overwatch. CS, Valorant and R6 have no position data, so those list names
+only.
+
+PandaScore publishes no starting lineup and marks every rostered player active,
+so the card doesn't guess: a squad carrying seven players shows all seven rather
+than labelling anyone a substitute.
 
 ---
 

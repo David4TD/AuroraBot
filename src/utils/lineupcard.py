@@ -4,10 +4,10 @@ Lives here rather than on a cog so both can render an identical card without
 either reaching into the other — a cross-cog reach is what silently broke
 `/games` when a method moved.
 
-**What this is not.** PandaScore exposes a confirmed per-match lineup only via
-``expected_roster``, which comes back empty on this plan, so the card shows each
-team's *current* roster — substitutes included, and not a guarantee of who
-starts. The footer says so rather than implying certainty the data doesn't have.
+**What this is not.** PandaScore has no starting-lineup field and marks every
+rostered player ``active: true``, so the card shows each team's *current* roster
+and does not claim who starts. A squad listing six or seven players shows all of
+them; the footer says as much rather than implying certainty the data lacks.
 
 Player photos exist in the API but can't appear here: Discord renders images
 inline only as custom emoji, and minting one per player would burn the
@@ -26,51 +26,46 @@ from .matches import opponents
 from .regions import event_flag, flag_for_country
 from .tournaments import parse_dt
 
-# Enough for a starting five plus a couple of subs; embed fields cap at 1024
-# characters and a long bench pushes the two columns out of alignment.
+# A five-player squad plus a couple of extras. Embed fields cap at 1024
+# characters, and a very long list stops the two columns reading across.
 MAX_PLAYERS = 7
 
 
 def _line(player: dict) -> str:
     flag = flag_for_country(player.get("nationality")) or "🏳️"
-    role = ROLE_LABEL.get(player.get("role") or "", "")
+    role = ROLE_LABEL.get((player.get("role") or "").lower(), "")
     suffix = f" · {role}" if role else ""
-    return f"{flag} **{player['name']}**{suffix}"
+    return f"{flag} **{player.get('name') or '?'}**{suffix}"
 
 
 def roster_lines(players: list[dict]) -> str:
-    """One line per player: flag, handle, role.
+    """One line per player: flag, handle, position.
 
-    Roles drive the row order so the two columns read across — Top opposite
-    Top, Support opposite Support. A team carrying two players in one lane
-    would otherwise shunt everything below it down a row and break the
-    alignment, so only the first player per lane goes in the main block; the
-    rest fall to a bench underneath, which is also the more honest reading
-    given the API doesn't say who starts.
+    Ordered by position so the two columns read across — Top opposite Top,
+    Support opposite Support.
+
+    **No starter/substitute split.** An earlier version put the first player in
+    each lane up top and the rest under a "Bench" heading, which looked
+    authoritative but was invented: PandaScore marks every rostered player
+    ``active: true`` and offers no starting-lineup field, so a team listing two
+    top laners genuinely doesn't say which one plays. Both are simply listed,
+    and a squad larger than five is visible as extra rows rather than being
+    silently reclassified.
     """
     if not players:
         return "_Roster not listed_"
 
-    seen: set[str] = set()
-    starters, bench = [], []
-    for p in players:
-        role = p.get("role")
-        if role in ROLE_ORDER and role not in seen:
-            seen.add(role)
-            starters.append(p)
-        else:
-            bench.append(p)
-
-    starters.sort(key=lambda p: ROLE_ORDER[p["role"]])
-    lines = [_line(p) for p in starters]
-    room = MAX_PLAYERS - len(lines)
-    if bench and room > 0:
-        lines.append("_Bench_" if starters else "")
-        lines += [_line(p) for p in bench[:room]]
-        bench = bench[room:]
-    if bench:
-        lines.append(f"_+{len(bench)} more_")
-    return "\n".join(x for x in lines if x)
+    ordered = sorted(
+        players,
+        key=lambda p: (
+            ROLE_ORDER.get((p.get("role") or "").lower(), 99),
+            (p.get("name") or "").lower(),
+        ),
+    )
+    lines = [_line(p) for p in ordered[:MAX_PLAYERS]]
+    if len(ordered) > MAX_PLAYERS:
+        lines.append(f"_+{len(ordered) - MAX_PLAYERS} more_")
+    return "\n".join(lines)
 
 
 async def build_card(bot, match: dict, game_key: str) -> discord.Embed:
@@ -132,7 +127,7 @@ async def build_card(bot, match: dict, game_key: str) -> discord.Embed:
         embed.add_field(name="Streams", value=links, inline=False)
 
     embed.set_footer(
-        text="Current rosters — PandaScore doesn't publish confirmed "
-        "starting lineups, so substitutes may be listed."
+        text="Current rosters — PandaScore doesn't publish starting lineups, "
+        "so a squad may list more players than start."
     )
     return embed

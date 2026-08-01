@@ -42,11 +42,30 @@ FETCH_SIZE = 50
 # longer than the tournament list.
 ROSTER_CACHE_SECONDS = 6 * 60 * 60
 
-# Canonical lane order, so both sides of a lineup card line up row for row.
-# Games without roles fall through to 99 and sort by name.
-ROLE_ORDER = {"top": 0, "jungle": 1, "mid": 2, "adc": 3, "support": 4}
-ROLE_LABEL = {"top": "Top", "jungle": "Jungle", "mid": "Mid",
-              "adc": "Bot", "support": "Support"}
+# Canonical position order, so both sides of a lineup card read across.
+#
+# These are the strings PandaScore actually returns, which are **not** the
+# obvious ones: League of Legends uses ``jun`` and ``sup``, and Dota 2 uses the
+# numeric positions 1-5 rather than names. Assuming "jungle"/"support" meant
+# every LoL jungler and support fell through as unrecognised. Values are
+# lower-cased before lookup (Overwatch capitalises), and anything unknown sorts
+# last rather than being dropped.
+ROLE_ORDER = {
+    # League of Legends
+    "top": 0, "jun": 1, "jungle": 1, "mid": 2, "adc": 3, "bot": 3,
+    "sup": 4, "support": 4,
+    # Dota 2 — positions, carry through to hard support
+    "1": 0, "2": 1, "3": 2, "4": 3, "5": 4,
+    # Overwatch
+    "tank": 0, "dps": 1, "damage": 1,
+}
+ROLE_LABEL = {
+    "top": "Top", "jun": "Jungle", "jungle": "Jungle", "mid": "Mid",
+    "adc": "Bot", "bot": "Bot", "sup": "Support", "support": "Support",
+    "1": "Carry", "2": "Mid", "3": "Offlane", "4": "Soft support",
+    "5": "Hard support",
+    "tank": "Tank", "dps": "DPS", "damage": "DPS",
+}
 
 # Values are prefixed so a league id can never be mistaken for a tournament id.
 LEAGUE_PREFIX = "L:"

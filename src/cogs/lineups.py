@@ -4,10 +4,9 @@
 cascade, then renders both sides' rosters side by side, ordered by lane so the
 two columns read across.
 
-**What this is not.** PandaScore exposes a confirmed per-match lineup only via
-``expected_roster``, which comes back empty on this plan, so the card shows each
-team's *current* roster — substitutes included, and not a guarantee of who
-starts. The footer says so rather than implying certainty the data doesn't have.
+**What this is not.** PandaScore has no starting-lineup field, so the card shows
+each team's *current* roster without claiming who starts. See
+``utils.lineupcard`` for the card itself.
 
 Player photos exist in the API but can't appear here: Discord renders images
 inline only as custom emoji, and minting one per player would burn the 2000-emoji
