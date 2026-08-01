@@ -66,11 +66,30 @@ class Profiles(commands.Cog):
 
         embed = discord.Embed(title=f"👤 {target.display_name}", color=BRAND)
         embed.set_thumbnail(url=target.display_avatar.url)
-        embed.add_field(name="Points", value=str(user["points"]), inline=True)
-        total = user["predictions_total"] or 0
-        won = user["predictions_won"] or 0
-        acc = f"{(won / total * 100):.0f}%" if total else "—"
-        embed.add_field(name="Predictions", value=f"{won}/{total} ({acc})", inline=True)
+
+        if interaction.guild_id:
+            # Points are per server, so in a server that's the number that
+            # counts. The lifetime total across every server goes underneath.
+            here = await self.bot.db.guild_stats(target.id, interaction.guild_id)
+            settled = here["settled"]
+            acc = f"{(here['won'] / settled * 100):.0f}%" if settled else "—"
+            embed.add_field(
+                name="Points (this server)", value=str(here["points"]), inline=True
+            )
+            embed.add_field(
+                name="Predictions",
+                value=f"{here['won']}W/{here['lost']}L ({acc})"
+                + (f" · {here['open']} open" if here["open"] else ""),
+                inline=True,
+            )
+        else:
+            total = user["predictions_total"] or 0
+            won = user["predictions_won"] or 0
+            acc = f"{(won / total * 100):.0f}%" if total else "—"
+            embed.add_field(name="Points", value=str(user["points"]), inline=True)
+            embed.add_field(
+                name="Predictions", value=f"{won}/{total} ({acc})", inline=True
+            )
         fav = user["favorite_game"]
         embed.add_field(
             name="Default game",
@@ -89,7 +108,12 @@ class Profiles(commands.Cog):
                 value="Nobody yet — use `/follow` to track a team.",
                 inline=False,
             )
-        embed.set_footer(text="AuroraBot")
+        if interaction.guild_id:
+            embed.set_footer(
+                text=f"Points are per server · {user['points']} lifetime across all"
+            )
+        else:
+            embed.set_footer(text="AuroraBot")
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="follow", description="Follow a team to track them.")

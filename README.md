@@ -66,9 +66,19 @@ League and tournament subscriptions get a message at local midnight listing the
 day's matches, each with its own pair of team buttons for predictions. Busy days
 run across a few messages. `/schedule` posts today's immediately.
 
-The first message also carries a **server leaderboard** (W/L and win rate) and
-the last few settled predictions with who called them right. Both count only
-picks made in that server — `/leaderboard` is the global one.
+The first message also carries the **server leaderboard** and the last few
+settled predictions with who called them right.
+
+## 🎲 Predictions
+
+Pick a winner with `/predict`, or tap a team button on a match reminder or the
+daily schedule. You can change your mind until kick-off, then it locks. A
+correct call is worth **25 points** once the match finishes.
+
+**Points are per server.** A pick scores in the server you made it in, so
+`/leaderboard` and `/profile` show how you're doing *here* — not a total pooled
+from every other server the bot happens to be in. `/profile` notes your lifetime
+total across all servers in the footer.
 
 ## 🏆 What "Tier 1" means
 

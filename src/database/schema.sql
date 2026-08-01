@@ -165,6 +165,10 @@ CREATE TABLE IF NOT EXISTS predictions (
     match_starts_at TEXT,
     stake           INTEGER NOT NULL DEFAULT 10,
     status          TEXT NOT NULL DEFAULT 'open',  -- open | won | lost | void
+    -- What this pick actually paid out. Points are per server, so they have to
+    -- live on the row that knows which server it came from; summing these is
+    -- what makes both a server total and a global one derivable.
+    points_awarded  INTEGER NOT NULL DEFAULT 0,
     resolved_at     TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (discord_id) REFERENCES users(discord_id) ON DELETE CASCADE,

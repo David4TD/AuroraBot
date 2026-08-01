@@ -451,7 +451,8 @@ class Digest(commands.Cog):
                 rate = f"{round(100 * won / total)}%" if total else "—"
                 mark = medals[n] if n < len(medals) else f"`{n + 1}.`"
                 lines.append(
-                    f"{mark} <@{row['discord_id']}> — **{won}**W/{lost}L · {rate}"
+                    f"{mark} <@{row['discord_id']}> — **{int(row['points'])}** pts · "
+                    f"{won}W/{lost}L · {rate}"
                 )
             embed.add_field(
                 name="🏆 Leaderboard (this server)",

@@ -107,6 +107,21 @@ class Database:
             await self._conn.execute("ALTER TABLE predictions ADD COLUMN guild_id TEXT")
             await self._conn.commit()
 
+        # Step 4: points move from a global counter on users to the prediction
+        # that earned them, so they can be totalled per server.
+        if prediction_columns and "points_awarded" not in prediction_columns:
+            log.info("Adding points_awarded to predictions…")
+            await self._conn.execute(
+                "ALTER TABLE predictions ADD COLUMN points_awarded INTEGER NOT NULL DEFAULT 0"
+            )
+            # Backfill history with the reward that was actually paid at the
+            # time — deliberately the literal 25 rather than WIN_REWARD, so
+            # changing the reward later doesn't rewrite what people already won.
+            await self._conn.execute(
+                "UPDATE predictions SET points_awarded = 25 WHERE status = 'won'"
+            )
+            await self._conn.commit()
+
     async def _migrate_data(self) -> None:
         """Data migrations, run after schema.sql so every table exists."""
         assert self._conn is not None
@@ -770,12 +785,16 @@ class Database:
     async def resolve_prediction(
         self, prediction_id: int, status: str, points_delta: int, discord_id: str
     ) -> None:
+        awarded = points_delta if status == "won" else 0
         await self.conn.execute(
-            "UPDATE predictions SET status = ?, resolved_at = datetime('now') "
-            "WHERE id = ?",
-            (status, prediction_id),
+            "UPDATE predictions SET status = ?, points_awarded = ?, "
+            "resolved_at = datetime('now') WHERE id = ?",
+            (status, awarded, prediction_id),
         )
         if status == "won":
+            # users.points stays as the lifetime total across every server,
+            # which is what /profile shows in a DM. Per-server totals come from
+            # summing predictions.points_awarded instead.
             await self.conn.execute(
                 "UPDATE users SET points = points + ?, predictions_won = predictions_won + 1 "
                 "WHERE discord_id = ?",
@@ -821,15 +840,17 @@ class Database:
     async def guild_leaderboard(
         self, guild_id: int, limit: int = 5
     ) -> list[aiosqlite.Row]:
-        """Top predictors *in this server*, by settled predictions.
+        """Top predictors *in this server*, by points earned there.
 
-        ``users.points`` is a global running total, so it can't answer "who is
-        winning here". This aggregates the server's own settled picks instead.
+        ``users.points`` is a lifetime total across every server the bot is in,
+        so it can't answer "who is winning here". Summing the server's own
+        settled picks can.
         """
         cur = await self.conn.execute(
             """
             SELECT p.discord_id,
                    COALESCE(u.display_name, 'Someone') AS display_name,
+                   COALESCE(SUM(p.points_awarded), 0) AS points,
                    SUM(p.status = 'won')  AS won,
                    SUM(p.status = 'lost') AS lost
             FROM predictions p
@@ -837,12 +858,40 @@ class Database:
             WHERE p.guild_id = ? AND p.status IN ('won', 'lost')
             GROUP BY p.discord_id
             HAVING won + lost > 0
-            ORDER BY won DESC, (won + lost) ASC, display_name
+            ORDER BY points DESC, won DESC, (won + lost) ASC, display_name
             LIMIT ?
             """,
             (str(guild_id), limit),
         )
         return list(await cur.fetchall())
+
+    async def guild_stats(self, discord_id: int, guild_id: int | None) -> dict:
+        """One member's record in one server: points, wins, settled, open."""
+        empty = {"points": 0, "won": 0, "lost": 0, "settled": 0, "open": 0}
+        if guild_id is None:
+            return empty
+        cur = await self.conn.execute(
+            """
+            SELECT COALESCE(SUM(points_awarded), 0) AS points,
+                   SUM(status = 'won')  AS won,
+                   SUM(status = 'lost') AS lost,
+                   SUM(status = 'open') AS still_open
+            FROM predictions
+            WHERE discord_id = ? AND guild_id = ?
+            """,
+            (str(discord_id), str(guild_id)),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return empty
+        won, lost = int(row["won"] or 0), int(row["lost"] or 0)
+        return {
+            "points": int(row["points"] or 0),
+            "won": won,
+            "lost": lost,
+            "settled": won + lost,
+            "open": int(row["still_open"] or 0),
+        }
 
     async def recent_results(
         self, guild_id: int, limit: int = 5
@@ -863,9 +912,3 @@ class Database:
         )
         return list(await cur.fetchall())
 
-    async def leaderboard(self, limit: int = 10) -> list[aiosqlite.Row]:
-        cur = await self.conn.execute(
-            "SELECT * FROM users ORDER BY points DESC, predictions_won DESC LIMIT ?",
-            (limit,),
-        )
-        return list(await cur.fetchall())
