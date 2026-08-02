@@ -246,7 +246,7 @@ class Predictions(commands.Cog):
         rows = await self.bot.db.list_user_predictions(interaction.user.id, limit=10)
         if not rows:
             await interaction.response.send_message(
-                "You haven't made any predictions yet. Try `/predict`.", ephemeral=True
+                "You haven't made any predictions yet. Try `/predict`."
             )
             return
         icon = {"open": "⏳", "won": "✅", "lost": "❌", "void": "➖"}
@@ -258,7 +258,7 @@ class Predictions(commands.Cog):
         embed = discord.Embed(
             title="🎲 Your predictions", description="\n".join(lines), color=BRAND
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed)
 
     # ── background resolution ────────────────────────────────────────────────
     @tasks.loop(minutes=5)

@@ -198,7 +198,10 @@ class Digest(commands.Cog):
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.guild_only()
     async def schedule(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        # Public: the digest it posts is public, so a private "posted 2
+        # messages" left the person who ran it as the only one who saw a
+        # confirmation for something everyone can see.
+        await interaction.response.defer(thinking=True)
         subs = [
             s
             for s in await self.bot.db.list_subscriptions(interaction.guild_id)
@@ -207,8 +210,7 @@ class Digest(commands.Cog):
         if not subs:
             await interaction.followup.send(
                 "This channel has no tournament alerts. Add one with "
-                "`/alerts add game:… tournament:…`.",
-                ephemeral=True,
+                "`/alerts add game:… tournament:…`."
             )
             return
         posted = 0
@@ -220,8 +222,7 @@ class Digest(commands.Cog):
                 posted += 1
         await interaction.followup.send(
             f"Posted {posted} schedule message(s)." if posted
-            else "Nothing scheduled for today in those tournaments.",
-            ephemeral=True,
+            else "Nothing scheduled for today in those tournaments."
         )
 
     # ── daily sweep ──────────────────────────────────────────────────────────
