@@ -26,6 +26,7 @@ from ..utils.games import ALL_GAME_KEYS, label_for, resolve_slug
 from ..utils.guildgames import blocked_message, filter_enabled, no_games_message
 from ..utils.lineupcard import build_card
 from ..utils.matches import opponents
+from ..utils.resultcard import build_result_card
 from ..utils.pickers import game_of, team_choices, tournament_choices
 from ..utils.tiers import NO_TOP_TIER_MATCHES, filter_for
 
@@ -274,9 +275,15 @@ class Scores(commands.Cog):
         if not matches:
             await interaction.followup.send(self._empty(filters, "recent results"))
             return
-        embeds = [match_embed(m, filters.game_key, self.bot.icons) for m in matches[:SHOW]]
+        # A summary per match rather than a scoreline: /results is the one
+        # command where what happened *is* the content.
+        embeds = await asyncio.gather(
+            *(build_result_card(self.bot, m, filters.game_key, interaction.guild_id)
+              for m in matches[:SHOW])
+        )
         await interaction.followup.send(
-            content=f"✅ **Recent results** · {filters.describe()}", embeds=embeds
+            content=f"✅ **Recent results** · {filters.describe()}",
+            embeds=list(embeds),
         )
 
     async def _finished(self, filters: Filters) -> list[dict]:

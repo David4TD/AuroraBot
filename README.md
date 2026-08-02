@@ -158,8 +158,12 @@ both teams side by side, one row per lane so the columns read across, with
 nationality flags and kick-off time.
 
 `/upcoming` cards the soonest **three** matches and lists the rest as
-one-liners — a card is several times taller than a scoreline. `/live` and
-`/results` keep the compact format, since there a score is what you're after.
+one-liners — a card is several times taller than a scoreline. `/live` keeps the
+compact format, since there the question is just what's on.
+
+`/results` has its own card: final score with the winner first, the game-by-game
+breakdown with each map's winner and length, total duration, and — if anyone in
+the server predicted it — who called it right.
 
 Cards show each team's **current roster**, ordered by position — Top, Jungle,
 Mid, Bot, Support for LoL; Carry through Hard support for Dota; Tank/DPS/Support
