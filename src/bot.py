@@ -36,6 +36,7 @@ COGS = [
     "src.cogs.alerts",
     "src.cogs.digest",
     "src.cogs.lineups",
+    "src.cogs.tournaments",
 ]
 
 

@@ -32,7 +32,8 @@ class Meta(commands.Cog):
         embed.add_field(
             name="📊 Data",
             value="`/standings` (current tournaments) · `/team` (deep analytics)\n"
-            "`/lineup` — pre-match rosters by role",
+            "`/lineup` — pre-match rosters by role\n"
+            "`/tournament` — event info and its next matches",
             inline=False,
         )
         embed.add_field(

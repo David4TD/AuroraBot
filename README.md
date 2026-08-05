@@ -24,6 +24,7 @@ Server* runs `/games` and picks some.
 | **Standings** | `/standings <league>` — current splits only |
 | **Analytics** | `/team <name>` — form, win rate, roster, stats links |
 | **Lineups** | `/lineup` — who's playing an upcoming match, by role |
+| **Tournaments** | `/tournament` — event info and its next 5 matches |
 | **Alerts** | `/alerts add`, `/alerts list`, `/alerts remove` |
 | **Schedule** | `/schedule` — post today's matches now |
 | **Predictions** | `/predict`, `/mypredictions`, `/leaderboard` |
@@ -125,6 +126,16 @@ will delete and asks a second time — there's no undo.
 
 Nobody's prediction history in *other* servers is touched, and lifetime points
 survive a reset.
+
+## 🏆 Tournaments
+
+`/tournament` shows one event at a glance: dates, tier, region, prize pool,
+the field, how far through it is, anything live right now, and the **next five
+matches**. Leave the tournament blank and it offers whatever's currently running
+for that game.
+
+An event announced weeks ahead has no bracket yet, so the card says when it
+starts rather than showing an empty schedule.
 
 ## 🏆 What "Tier 1" means
 
