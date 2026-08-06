@@ -645,6 +645,35 @@ class Database:
         )
         return (await cur.fetchone()) is not None
 
+    async def pending_result_alerts(self, limit: int = 20) -> list[aiosqlite.Row]:
+        """Matches a channel saw go live but hasn't seen a result for.
+
+        This is the whole basis for auto-posting results: a finished match is
+        in neither the running nor the upcoming feed, so there's nothing to
+        poll. What we *do* know is which matches we announced as live, and
+        those are exactly the ones worth checking for a final score.
+
+        Oldest first, and capped — a backlog after downtime should drain over
+        several polls rather than firing a burst of requests at once.
+        """
+        cur = await self.conn.execute(
+            """
+            SELECT DISTINCT a.match_id, a.channel_id
+            FROM alerted_matches a
+            WHERE a.state = 'live'
+              AND NOT EXISTS (
+                  SELECT 1 FROM alerted_matches f
+                  WHERE f.match_id = a.match_id
+                    AND f.channel_id = a.channel_id
+                    AND f.state = 'finished'
+              )
+            ORDER BY a.alerted_at
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        return list(await cur.fetchall())
+
     async def mark_alerted(self, match_id: int, state: str, channel_id: int) -> None:
         await self.conn.execute(
             "INSERT OR IGNORE INTO alerted_matches (match_id, state, channel_id) "

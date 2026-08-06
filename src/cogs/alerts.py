@@ -5,11 +5,17 @@ posts to every subscribed channel:
 
 * a **reminder** ``ALERT_LEAD_MINUTES`` (default 30) before kick-off, carrying
   a button per team so anyone can predict the winner without a slash command;
-* a **live** alert the moment the match goes live.
+* a **live** alert the moment the match goes live;
+* a **result** summary when it finishes.
 
-Both are deduplicated per (match, state, channel) via ``alerted_matches``, so a
-restart mid-window never double-posts. The loop also drives the health
+All three are deduplicated per (match, state, channel) via ``alerted_matches``,
+so a restart mid-window never double-posts. The loop also drives the health
 heartbeat and prunes its own bookkeeping tables.
+
+Results can't come from a feed — a finished match is in neither the running nor
+the upcoming list, and the generic past feed carries almost no Tier 1 matches
+(see ``Scores._finished``). Instead the matches this channel already saw go
+*live* are checked for a final score, which is both targeted and bounded.
 """
 from __future__ import annotations
 
@@ -24,7 +30,7 @@ from discord.ext import commands, tasks
 from ..services.pandascore import PandaScoreError
 from ..utils.choices import GAME_CHOICES
 from ..utils.embeds import BRAND, GREEN, match_embed
-from ..utils.games import label_for, rank_by_name, resolve_slug
+from ..utils.games import key_for_videogame, label_for, rank_by_name, resolve_slug
 from ..utils.guildgames import blocked_message
 from ..utils.guildprefs import alert_lead
 from ..utils.matches import league_id, opponents, team_ids, tournament_id
@@ -32,6 +38,7 @@ from ..utils.predictions import submit_prediction
 from ..utils.scoring import potential_odds
 from ..utils.stakes import stake_panel
 from ..utils.regions import event_flag, region_flag
+from ..utils.resultcard import build_result_card
 from ..utils.tiers import filter_for
 from ..utils.pickers import game_of, tournament_choices
 from ..utils.tournaments import parse_dt
@@ -55,6 +62,9 @@ from ..services.tourneys import (  # noqa: E402  (grouped with the constants)
 )
 
 PRUNE_EVERY_POLLS = 60  # ~hourly at the default 60s poll interval
+# Finished-match lookups per poll. One request each, so this bounds the cost
+# of a backlog after downtime rather than firing dozens at once.
+RESULTS_PER_POLL = 10
 
 
 class VoteButton(
@@ -589,12 +599,78 @@ class Alerts(commands.Cog):
             for match in running:
                 await self._announce(sub, match, state="live")
 
+        await self._announce_results()
+
         # Housekeeping is cheap but pointless every minute.
         self._polls += 1
         if self._polls % PRUNE_EVERY_POLLS == 1:
             removed = await self.bot.db.prune_alert_history(days=PRUNE_AFTER_DAYS)
             if removed:
                 log.debug("Pruned %d stale alert rows", removed)
+
+    async def _announce_results(self) -> None:
+        """Post the summary for any match a channel saw go live and finish.
+
+        Driven from ``alerted_matches`` rather than a feed: a finished match
+        appears in neither the running nor the upcoming list, and the generic
+        past feed is useless for Tier 1 (see ``Scores._finished``). The matches
+        we announced as live are precisely the ones a channel is waiting on.
+
+        Each pending match costs one ``/matches/{id}`` call, deduplicated
+        across channels and capped per poll, so a busy evening or a restart
+        backlog drains steadily instead of in a burst.
+        """
+        try:
+            pending = await self.bot.db.pending_result_alerts(limit=RESULTS_PER_POLL)
+        except Exception:  # noqa: BLE001 - never take the poll down with us
+            log.exception("could not list pending result alerts")
+            return
+        if not pending:
+            return
+
+        by_match: dict[int, list[int]] = {}
+        for row in pending:
+            by_match.setdefault(int(row["match_id"]), []).append(int(row["channel_id"]))
+
+        for match_id, channels in by_match.items():
+            try:
+                match = await self.bot.api.get_match(match_id)
+            except PandaScoreError as exc:
+                log.warning("result lookup failed for match %s: %s", match_id, exc)
+                continue
+            status = (match.get("status") or "").lower()
+            if status != "finished":
+                # Still playing, or abandoned without a result — try next poll.
+                # The row is pruned after PRUNE_AFTER_DAYS either way, so a
+                # match that never finishes stops being asked about.
+                continue
+
+            game_key = key_for_videogame(
+                match.get("videogame") or {}, self.bot.settings.cs_slug
+            )
+            for channel_id in channels:
+                await self._post_result(match, game_key, channel_id)
+
+    async def _post_result(self, match: dict, game_key, channel_id: int) -> None:
+        match_id = int(match["id"])
+        channel = self.bot.get_channel(channel_id)
+        if channel is None:
+            # Channel gone: mark it done so we stop re-fetching this match.
+            await self.bot.db.mark_alerted(match_id, "finished", channel_id)
+            return
+
+        guild_id = channel.guild.id if getattr(channel, "guild", None) else None
+        try:
+            embed = await build_result_card(self.bot, match, game_key, guild_id)
+            await channel.send(content="🏁 **Full time!**", embed=embed)
+        except discord.Forbidden:
+            log.warning("Missing permission to post results in %s", channel_id)
+        except discord.HTTPException as exc:
+            log.warning("Failed to post result in %s: %s", channel_id, exc)
+        finally:
+            # Marked regardless: a channel we can't post to must not be retried
+            # every minute for three days.
+            await self.bot.db.mark_alerted(match_id, "finished", channel_id)
 
     async def _announce(self, sub, match: dict, *, state: str) -> None:
         """Post one alert, unless this channel already saw this match/state."""

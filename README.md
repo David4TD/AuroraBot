@@ -62,6 +62,10 @@ optional `game:` filter. Alerts need *Manage Server*.
 When a match **goes live**, the alert lists who backed which team, with the
 split (`3/5`). Predictions have closed by then, so nothing is spoiled.
 
+When it **finishes**, the result posts itself — the same summary card `/results`
+shows, with the score, the game-by-game breakdown and who called it right. No
+command needed.
+
 ## 📅 Daily schedule
 
 League and tournament subscriptions get a message at local midnight with a
