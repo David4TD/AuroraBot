@@ -49,6 +49,7 @@ from ..utils.matches import (
 )
 from ..utils.predictions import Outcome, submit_prediction
 from ..utils.stakes import stake_panel
+from ..utils.subscriptions import wants_votes
 from ..utils.regions import region_flag
 from ..utils.schedule import iso_date, local_now, local_today, within_day
 from ..utils.tiers import filter_for
@@ -314,6 +315,9 @@ class Digest(commands.Cog):
             matches[i:i + MATCHES_PER_MESSAGE]
             for i in range(0, len(matches), MATCHES_PER_MESSAGE)
         ]
+        # A subscription with predictions off gets the schedule without vote
+        # buttons — and without a leaderboard, which would be empty anyway.
+        votes = wants_votes(sub)
         first_message = None
         for part, chunk in enumerate(chunks):
             start = part * MATCHES_PER_MESSAGE
@@ -321,7 +325,7 @@ class Digest(commands.Cog):
                 sub, today, chunk,
                 total=len(matches), part=part, parts=len(chunks),
             )
-            if part == 0:
+            if part == 0 and votes:
                 await self._add_standings(
                     header, sub["guild_id"], _target_id(sub), _target_name(sub)
                 )
@@ -337,7 +341,8 @@ class Digest(commands.Cog):
             try:
                 message = await channel.send(
                     embeds=[header, *cards],
-                    view=self._vote_view(digest_id, chunk, start),
+                    view=(self._vote_view(digest_id, chunk, start)
+                          if votes else None),
                 )
             except discord.Forbidden:
                 log.warning("digest: missing permission to post in %s", channel_id)

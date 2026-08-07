@@ -55,6 +55,11 @@ The tournament picker shows anything **running now or starting within two
 months**, so you can subscribe well before an event begins. Picking a whole
 league covers every stage it adds later.
 
+Predictions are **per subscription**. Add one with `predictions:False` for
+alerts without vote buttons, or use the toggle on the confirmation to change
+your mind later — a channel can run a prediction game for its main league and
+stay quiet elsewhere. `/alerts list` marks the quiet ones.
+
 `/alerts list` shows what a channel is subscribed to. `/alerts remove` lets you
 tick the ones to drop — there's also *Remove all*, which asks twice. Both take an
 optional `game:` filter. Alerts need *Manage Server*.

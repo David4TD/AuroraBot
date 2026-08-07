@@ -37,6 +37,7 @@ from ..utils.matches import league_id, opponents, team_ids, tournament_id
 from ..utils.predictions import submit_prediction
 from ..utils.scoring import potential_odds
 from ..utils.stakes import stake_panel
+from ..utils.subscriptions import wants_votes
 from ..utils.regions import event_flag, region_flag
 from ..utils.resultcard import build_result_card
 from ..utils.tiers import filter_for
@@ -132,6 +133,11 @@ class VoteButton(
         await interaction.response.send_message(message, view=view, ephemeral=True)
 
 
+def can_manage(user) -> bool:
+    perms = getattr(user, "guild_permissions", None)
+    return bool(perms and perms.manage_guild)
+
+
 SCOPE_ICON = {"team": "👥", "league": "🏅", "tournament": "🏆", "game": "🎮"}
 MAX_PICKER_OPTIONS = 25       # Discord's cap on select options
 
@@ -150,6 +156,68 @@ def describe_target(sub) -> str:
         flag = region_flag(name)
         return f"{flag} {name}" if flag else name
     return f"all {label_for(sub['game'])}"
+
+
+def subscription_embed(target: str, lead: int, predictions: bool) -> discord.Embed:
+    """What a new (or just-toggled) subscription will do."""
+    lines = [
+        f"🔔 This channel will be alerted for {target}.",
+        f"You'll get a **{lead}-minute reminder** before each match "
+        f"and a ping when it goes **live**.",
+    ]
+    lines.append(
+        "🎲 Reminders and the daily schedule carry **vote buttons**."
+        if predictions
+        else "🔕 **Predictions are off** here — alerts only, no vote buttons."
+    )
+    return discord.Embed(description="\n".join(lines), color=GREEN)
+
+
+class PredictionToggleButton(discord.ui.Button):
+    """Flip vote buttons for one subscription, from its confirmation."""
+
+    def __init__(self, sub_id: int, predictions: bool) -> None:
+        self.sub_id = sub_id
+        self.predictions = predictions
+        super().__init__(
+            label="Turn predictions off" if predictions else "Turn predictions on",
+            emoji="🔕" if predictions else "🎲",
+            style=discord.ButtonStyle.secondary,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not can_manage(interaction.user):
+            await interaction.response.send_message(
+                "You need **Manage Server** to change alerts.", ephemeral=True
+            )
+            return
+        wanted = not self.predictions
+        changed = await interaction.client.db.set_subscription_predictions(
+            self.sub_id, interaction.guild_id, wanted
+        )
+        if not changed:
+            await interaction.response.edit_message(
+                content="That subscription no longer exists.", embed=None, view=None
+            )
+            return
+        await interaction.response.edit_message(
+            embed=discord.Embed(
+                description=(
+                    "🎲 Predictions are **on** — reminders and the daily "
+                    "schedule will carry vote buttons."
+                    if wanted
+                    else "🔕 Predictions are **off** — alerts only, no vote buttons."
+                ),
+                color=GREEN,
+            ),
+            view=PredictionToggleView(self.sub_id, wanted),
+        )
+
+
+class PredictionToggleView(discord.ui.View):
+    def __init__(self, sub_id: int, predictions: bool) -> None:
+        super().__init__(timeout=180)
+        self.add_item(PredictionToggleButton(sub_id, predictions))
 
 
 class RemoveSelect(discord.ui.Select):
@@ -311,6 +379,7 @@ class Alerts(commands.Cog):
         game="Game to watch (required).",
         team="Only alert for this team in that game.",
         tournament="A whole league, or one stage of it (pick from the list).",
+        predictions="Put vote buttons on this subscription's alerts. Default: yes.",
     )
     @app_commands.choices(game=GAME_CHOICES)
     @app_commands.autocomplete(tournament=_tournament_autocomplete)
@@ -320,6 +389,7 @@ class Alerts(commands.Cog):
         game: app_commands.Choice[str],
         team: str | None = None,
         tournament: str | None = None,
+        predictions: bool = True,
     ) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
 
@@ -377,6 +447,7 @@ class Alerts(commands.Cog):
             league_name=lg_name,
             tournament_id=tour_id,
             tournament_name=tour_name,
+            predictions=predictions,
         )
         if not created:
             await interaction.followup.send(
@@ -397,14 +468,10 @@ class Alerts(commands.Cog):
             self.bot.settings, await self.bot.db.guild_settings(interaction.guild_id)
         )
         await interaction.followup.send(
-            embed=discord.Embed(
-                description=(
-                    f"🔔 This channel will be alerted for {target}.\n"
-                    f"You'll get a **{lead}-minute reminder** before each match "
-                    f"and a ping when it goes **live**."
-                ),
-                color=GREEN,
-            ),
+            embed=subscription_embed(target, lead, predictions),
+            # The toggle rides along so the choice can be changed without
+            # removing and re-adding the subscription.
+            view=PredictionToggleView(created, predictions),
             ephemeral=True,
         )
 
@@ -459,9 +526,10 @@ class Alerts(commands.Cog):
             for s in group:
                 n += 1
                 scope = s["scope"] or "game"
+                quiet = "" if wants_votes(s) else " · 🔕 no predictions"
                 lines.append(
                     f"`{n}.` {SCOPE_ICON.get(scope, '•')} **{describe_target(s)}** "
-                    f"· {label_for(s['game'])}"
+                    f"· {label_for(s['game'])}{quiet}"
                 )
             embed.add_field(name=heading, value="\n".join(lines), inline=False)
 
@@ -687,7 +755,10 @@ class Alerts(commands.Cog):
             return
 
         teams = opponents(match)
-        predictable = state == "reminder" and len(teams) >= 2
+        # A subscription can opt out of the prediction game entirely: alerts
+        # still fire, they just carry no vote buttons.
+        votes = wants_votes(sub)
+        predictable = state == "reminder" and len(teams) >= 2 and votes
         if state == "reminder":
             lead = alert_lead(
                 self.bot.settings,

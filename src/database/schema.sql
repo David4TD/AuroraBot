@@ -95,6 +95,10 @@ CREATE TABLE IF NOT EXISTS alert_subscriptions (
     league_name     TEXT,
     tournament_id   INTEGER,              -- set when scope = 'tournament'
     tournament_name TEXT,
+    -- Whether match reminders and the daily digest carry vote buttons for this
+    -- subscription. Per subscription rather than per server: a channel may want
+    -- a prediction game for its main league and quiet score alerts elsewhere.
+    predictions     INTEGER NOT NULL DEFAULT 1,
     created_by      TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );

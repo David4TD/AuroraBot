@@ -134,6 +134,16 @@ class Database:
                 await self._conn.execute(ddl)
             await self._conn.commit()
 
+        # Step 6: predictions become opt-out per subscription. Existing rows
+        # default to 1, so nothing that was already running goes quiet.
+        if "predictions" not in columns:
+            log.info("Adding predictions toggle to alert_subscriptions…")
+            await self._conn.execute(
+                "ALTER TABLE alert_subscriptions "
+                "ADD COLUMN predictions INTEGER NOT NULL DEFAULT 1"
+            )
+            await self._conn.commit()
+
         alert_message_columns = await self._table_columns("alert_messages")
         if alert_message_columns and "tournament_id" not in alert_message_columns:
             log.info("Adding tournament columns to alert_messages…")
@@ -442,16 +452,22 @@ class Database:
         league_name: str | None = None,
         tournament_id: int | None = None,
         tournament_name: str | None = None,
-    ) -> bool:
-        """Insert a subscription. Returns False if this channel already has it."""
+        predictions: bool = True,
+    ) -> int | None:
+        """Insert a subscription. Returns its id, or None if it already exists.
+
+        The id is what lets the confirmation offer a toggle without a second
+        lookup; autoincrement starts at 1, so callers testing truthiness still
+        read correctly.
+        """
         try:
-            await self.conn.execute(
+            cur = await self.conn.execute(
                 """
                 INSERT INTO alert_subscriptions
                     (guild_id, channel_id, game, scope, team_id, team_name,
                      league_id, league_name, tournament_id, tournament_name,
-                     created_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     predictions, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(guild_id),
@@ -464,13 +480,30 @@ class Database:
                     league_name,
                     tournament_id,
                     tournament_name,
+                    1 if predictions else 0,
                     str(created_by),
                 ),
             )
             await self.conn.commit()
-            return True
+            return cur.lastrowid
         except aiosqlite.IntegrityError:
-            return False  # duplicate subscription
+            return None  # duplicate subscription
+
+    async def set_subscription_predictions(
+        self, sub_id: int, guild_id: int, on: bool
+    ) -> int:
+        """Turn vote buttons on or off for one subscription.
+
+        Guild-scoped in the WHERE clause: the id arrives from a Discord
+        component and can't be trusted to belong to the clicking server.
+        """
+        cur = await self.conn.execute(
+            "UPDATE alert_subscriptions SET predictions = ? "
+            "WHERE id = ? AND guild_id = ?",
+            (1 if on else 0, sub_id, str(guild_id)),
+        )
+        await self.conn.commit()
+        return cur.rowcount
 
     # ── tournament cache ─────────────────────────────────────────────────────
     async def save_tournaments(self, game: str, rows: list[dict]) -> None:
