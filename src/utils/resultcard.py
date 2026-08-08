@@ -6,9 +6,12 @@ whether it ended on a forfeit. `/live` and `/upcoming` want the compact form —
 there the question is "what's on" — but a result is the whole point of
 `/results`, so it gets the detail.
 
-It also reports how the **server's** predictions went, which is only possible
-because predictions record the guild they were made in. That's read from the
-database, never the API.
+It also reports how the **server's** predictions went and where that leaves the
+tournament standings — both only possible because predictions record the guild
+they were made in. Those come from the database, never the API.
+
+The caller settles the match *before* rendering, so the standings shown already
+include the result being announced.
 """
 from __future__ import annotations
 
@@ -25,6 +28,7 @@ log = logging.getLogger("aurorabot.resultcard")
 
 MAX_GAMES_SHOWN = 7        # a Bo5 plus headroom; embed fields cap at 1024
 MAX_NAMES = 8              # predictors listed per outcome
+LEADERBOARD_SHOWN = 5      # standings rows under a result
 
 
 def _duration(seconds: int | None) -> str:
@@ -179,5 +183,44 @@ async def _add_predictions(bot, embed, match, teams, guild_id) -> None:
     embed.add_field(
         name=f"🔮 Called it: {len(right)}/{len(picks)}",
         value="\n".join(parts)[:1024],
+        inline=False,
+    )
+    await _add_leaderboard(bot, embed, match, guild_id)
+
+
+async def _add_leaderboard(bot, embed, match, guild_id) -> None:
+    """The tournament's standings as they are *after* this match.
+
+    Boards are per tournament, so this is the one the result just changed
+    rather than a server-wide total. The caller settles the match first, so the
+    points here already include it.
+    """
+    tournament_id = (match.get("tournament") or {}).get("id")
+    try:
+        board = await bot.db.tournament_leaderboard(
+            int(guild_id), int(tournament_id) if tournament_id else None,
+            limit=LEADERBOARD_SHOWN,
+        )
+    except Exception:  # noqa: BLE001 - the result matters more than the extra
+        log.exception("could not read the leaderboard for match %s", match.get("id"))
+        return
+    if not board:
+        return
+
+    medals = ["🥇", "🥈", "🥉"]
+    lines = []
+    for n, row in enumerate(board):
+        won, lost = int(row["won"] or 0), int(row["lost"] or 0)
+        mark = medals[n] if n < len(medals) else f"`{n + 1}.`"
+        lines.append(
+            f"{mark} <@{row['discord_id']}> — **{int(row['points'])}** pts "
+            f"· {won}W/{lost}L"
+        )
+
+    name = (match.get("tournament") or {}).get("name") or "Leaderboard"
+    league = (match.get("league") or {}).get("name") or ""
+    embed.add_field(
+        name=f"🏆 {league} {name}".strip()[:256],
+        value="\n".join(lines)[:1024],
         inline=False,
     )

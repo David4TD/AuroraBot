@@ -36,6 +36,7 @@ from ..utils.guildprefs import alert_lead
 from ..utils.matches import league_id, opponents, team_ids, tournament_id
 from ..utils.predictions import submit_prediction
 from ..utils.scoring import potential_odds
+from ..utils.settle import settle_match
 from ..utils.stakes import stake_panel
 from ..utils.subscriptions import wants_votes
 from ..utils.regions import event_flag, region_flag
@@ -712,6 +713,17 @@ class Alerts(commands.Cog):
                 # The row is pruned after PRUNE_AFTER_DAYS either way, so a
                 # match that never finishes stops being asked about.
                 continue
+
+            # Settle before rendering, or the leaderboard on the card would be
+            # missing the very match it's announcing — the resolve loop only
+            # runs every few minutes. Idempotent, so the loop finding it first
+            # is fine too.
+            winner = match.get("winner_id")
+            if winner is not None:
+                try:
+                    await settle_match(self.bot, match_id, int(winner))
+                except Exception:  # noqa: BLE001 - the result still goes out
+                    log.exception("could not settle match %s", match_id)
 
             game_key = key_for_videogame(
                 match.get("videogame") or {}, self.bot.settings.cs_slug

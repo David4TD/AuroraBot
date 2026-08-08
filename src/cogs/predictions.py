@@ -27,11 +27,7 @@ from ..utils.guildgames import blocked_message, no_games_message
 from ..utils.pickers import game_of, team_choices, tournament_choices
 from ..utils.matches import opponents, tournament_id
 from ..utils.predictions import submit_prediction
-from ..utils.scoring import (
-    MIN_PERFECT_DAY_MATCHES,
-    PERFECT_DAY_BONUS,
-    payout_for,
-)
+from ..utils.settle import settle_match
 from ..utils.stakes import stake_panel
 from ..utils.regions import event_flag
 from ..utils.tiers import filter_for
@@ -287,79 +283,7 @@ class Predictions(commands.Cog):
             winner_id = (match.get("winner") or {}).get("id")
             if winner_id is None:
                 continue
-            await self._settle(match_id, int(winner_id), preds)
-
-    async def _settle(self, match_id: int, winner_id: int, preds: list) -> None:
-        """Pay out one finished match.
-
-        The underdog multiplier is priced **per server**, so the crowd a pick is
-        measured against is the one that saw it — a server where everyone backed
-        the favourite pays differently from one that was split.
-        """
-        db = self.bot.db
-
-        # Vote distribution per server, from every pick on this match — not just
-        # the still-open ones, so a re-run can't reprice a match differently.
-        by_guild: dict[str | None, list] = {}
-        for p in preds:
-            by_guild.setdefault(p["guild_id"], []).append(p)
-
-        for guild_id, group in by_guild.items():
-            all_picks = await db.match_predictions(match_id, guild_id)
-            voters = len(all_picks) or len(group)
-            backers = sum(
-                1 for x in all_picks if int(x["predicted_team_id"]) == winner_id
-            ) or sum(1 for x in group if int(x["predicted_team_id"]) == winner_id)
-
-            for p in group:
-                won = int(p["predicted_team_id"]) == winner_id
-                if won:
-                    # Streak is read before this result lands, so it counts the
-                    # run *leading into* this pick rather than including it.
-                    streak = await db.current_streak(int(p["discord_id"]), guild_id)
-                    result = payout_for(int(p["stake"]), backers, voters, streak)
-                    points = result.points
-                else:
-                    points = 0
-                await db.resolve_prediction(
-                    prediction_id=p["id"],
-                    status="won" if won else "lost",
-                    points_delta=points,
-                    discord_id=p["discord_id"],
-                )
-                log.info(
-                    "Resolved #%s (match %s, guild %s): %s for %d pts "
-                    "[stake %s, %d/%d backers]",
-                    p["id"], match_id, guild_id, "won" if won else "lost",
-                    points, p["stake"], backers, voters,
-                )
-                if won:
-                    await self._maybe_perfect_day(p, guild_id)
-
-    async def _maybe_perfect_day(self, prediction, guild_id) -> None:
-        """Award the bonus if this completes a clean sweep of the match day.
-
-        Checked on every win rather than on a schedule: the last result to land
-        is the one that completes the day, and it's a cheap indexed lookup.
-        """
-        starts = prediction["match_starts_at"]
-        if not starts:
-            return
-        day = str(starts)[:10]
-        same_day = await self.bot.db.day_predictions(
-            int(prediction["discord_id"]), guild_id, day
-        )
-        if len(same_day) < MIN_PERFECT_DAY_MATCHES:
-            return
-        if any(row["status"] != "won" for row in same_day):
-            return
-        await self.bot.db.award_bonus(
-            int(prediction["discord_id"]), int(prediction["id"]), PERFECT_DAY_BONUS
-        )
-        log.info(
-            "Perfect day for %s in guild %s on %s: +%d",
-            prediction["discord_id"], guild_id, day, PERFECT_DAY_BONUS,
-        )
+            await settle_match(self.bot, match_id, int(winner_id))
 
     @resolve_loop.before_loop
     async def _before(self) -> None:

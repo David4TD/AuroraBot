@@ -968,6 +968,14 @@ class Database:
         await self.conn.commit()
         return cur.rowcount
 
+    async def open_predictions_for_match(self, match_id: int) -> list[aiosqlite.Row]:
+        """Unsettled picks on one match, across every server."""
+        cur = await self.conn.execute(
+            "SELECT * FROM predictions WHERE match_id = ? AND status = 'open'",
+            (match_id,),
+        )
+        return list(await cur.fetchall())
+
     async def get_prediction_by_id(self, prediction_id: int) -> aiosqlite.Row | None:
         cur = await self.conn.execute(
             "SELECT * FROM predictions WHERE id = ?", (prediction_id,)
