@@ -163,6 +163,13 @@ CREATE TABLE IF NOT EXISTS digest_matches (
     digest_id   INTEGER NOT NULL,
     match_id    INTEGER NOT NULL,
     begin_at    TEXT,
+    -- The match's *own* tournament, which is not the digest's target: a league
+    -- subscription spans several at once (LCK's Legend and Rise groups), and a
+    -- vote has to be filed under the tournament it was actually about or it
+    -- lands on a different leaderboard from votes on the same match made
+    -- through a match reminder.
+    tournament_id   INTEGER,
+    tournament_name TEXT,
     team_a_id   INTEGER NOT NULL,
     team_a_name TEXT NOT NULL,
     team_b_id   INTEGER NOT NULL,

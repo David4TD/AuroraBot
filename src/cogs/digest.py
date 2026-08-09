@@ -160,8 +160,16 @@ class DigestVoteButton(
         team_b = {"id": int(row["team_b_id"]), "name": row["team_b_name"]}
         team, opponent = (team_a, team_b) if self.side == 0 else (team_b, team_a)
 
-        # The digest knows its tournament; the per-match row doesn't carry it.
-        meta = await interaction.client.db.digest_meta(self.digest_id)
+        # The match's own tournament, so a vote here lands on the same board as
+        # a vote on the same match from a reminder. A league digest covers
+        # several tournaments, so the digest's target is the wrong answer.
+        tour_id, tour_name = row["tournament_id"], row["tournament_name"]
+        if tour_id is None:
+            # Written before the column existed: fall back to the digest's
+            # target rather than filing the vote nowhere.
+            meta = await interaction.client.db.digest_meta(self.digest_id)
+            tour_id = meta["tournament_id"] if meta else None
+            tour_name = meta["tournament_name"] if meta else None
 
         _, message = await submit_prediction(
             interaction.client.db,
@@ -173,8 +181,8 @@ class DigestVoteButton(
             opponent=opponent,
             begin_at=row["begin_at"],
             guild_id=interaction.guild_id,
-            tournament_id=meta["tournament_id"] if meta else None,
-            tournament_name=meta["tournament_name"] if meta else None,
+            tournament_id=tour_id,
+            tournament_name=tour_name,
         )
         view = await stake_panel(
             interaction.client.db, interaction.user.id, self.match_id
@@ -306,6 +314,9 @@ class Digest(commands.Cog):
                 "begin_at": m.get("begin_at"),
                 "team_a": (t[0]["id"], t[0]["name"]),
                 "team_b": (t[1]["id"], t[1]["name"]),
+                # The match's own tournament, not the subscription's target.
+                "tournament_id": match_tournament_id(m),
+                "tournament_name": (m.get("tournament") or {}).get("name"),
             }
             for m, t in matches
         ]

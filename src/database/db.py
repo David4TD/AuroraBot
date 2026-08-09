@@ -144,6 +144,20 @@ class Database:
             )
             await self._conn.commit()
 
+        # Step 7: a digest row records the match's own tournament. Without it,
+        # votes cast from a league digest were filed under the *league* id while
+        # votes on the same match from a reminder used the tournament id, so the
+        # two landed on different leaderboards.
+        digest_match_columns = await self._table_columns("digest_matches")
+        if digest_match_columns and "tournament_id" not in digest_match_columns:
+            log.info("Adding tournament columns to digest_matches…")
+            for ddl in (
+                "ALTER TABLE digest_matches ADD COLUMN tournament_id INTEGER",
+                "ALTER TABLE digest_matches ADD COLUMN tournament_name TEXT",
+            ):
+                await self._conn.execute(ddl)
+            await self._conn.commit()
+
         alert_message_columns = await self._table_columns("alert_messages")
         if alert_message_columns and "tournament_id" not in alert_message_columns:
             log.info("Adding tournament columns to alert_messages…")
@@ -158,6 +172,51 @@ class Database:
         """Data migrations, run after schema.sql so every table exists."""
         assert self._conn is not None
         await self._migrate_games_to_optin()
+        await self._repair_digest_vote_tournaments()
+
+    async def _repair_digest_vote_tournaments(self) -> int:
+        """Realign votes that were filed under a league id instead of a stage.
+
+        Votes cast from a *league* digest recorded the league's id as their
+        tournament, while votes on the same match from a match reminder used the
+        real tournament id. The two then sat on different leaderboards, so a
+        match four people predicted showed one of them.
+
+        ``alert_messages`` holds the authoritative match → tournament mapping
+        and is the tie-breaker here. It's pruned after a few days, so this only
+        repairs recent history — older votes keep counting on the all-time board
+        either way. Safe to re-run: rows already correct don't match.
+        """
+        cur = await self.conn.execute(
+            """
+            UPDATE predictions AS p
+            SET tournament_id = (
+                    SELECT am.tournament_id FROM alert_messages am
+                    WHERE am.match_id = p.match_id
+                      AND am.tournament_id IS NOT NULL
+                    LIMIT 1
+                ),
+                tournament_name = COALESCE((
+                    SELECT am.tournament_name FROM alert_messages am
+                    WHERE am.match_id = p.match_id
+                      AND am.tournament_id IS NOT NULL
+                    LIMIT 1
+                ), p.tournament_name)
+            WHERE EXISTS (
+                SELECT 1 FROM alert_messages am
+                WHERE am.match_id = p.match_id
+                  AND am.tournament_id IS NOT NULL
+                  AND am.tournament_id IS NOT p.tournament_id
+            )
+            """
+        )
+        await self.conn.commit()
+        if cur.rowcount and cur.rowcount > 0:
+            log.info(
+                "Realigned %d prediction(s) onto their match's tournament",
+                cur.rowcount,
+            )
+        return cur.rowcount or 0
 
     async def _migrate_games_to_optin(self) -> None:
         """Flip /games from opt-out to opt-in without silencing existing servers.
@@ -843,8 +902,9 @@ class Database:
             """
             INSERT OR REPLACE INTO digest_matches
                 (digest_id, match_id, begin_at,
-                 team_a_id, team_a_name, team_b_id, team_b_name)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                 team_a_id, team_a_name, team_b_id, team_b_name,
+                 tournament_id, tournament_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -855,6 +915,8 @@ class Database:
                     m["team_a"][1],
                     m["team_b"][0],
                     m["team_b"][1],
+                    m.get("tournament_id"),
+                    m.get("tournament_name"),
                 )
                 for m in matches
             ],
