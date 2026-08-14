@@ -16,6 +16,7 @@ from discord.ext import commands
 from ..utils.embeds import BRAND
 
 TOP_N = 10
+RECENT_TITLES = 5
 
 
 class Leaderboard(commands.Cog):
@@ -26,7 +27,7 @@ class Leaderboard(commands.Cog):
         """Tournaments this server has actually predicted on, plus All-time."""
         rows = await self.bot.db.tournaments_with_predictions(interaction.guild_id)
         query = (current or "").lower()
-        choices = [app_commands.Choice(name="🏆 All-time (every tournament)", value="all")]
+        choices = [app_commands.Choice(name="🏆 Season table (every tournament)", value="all")]
         for r in rows:
             name = r["tournament_name"] or f"Tournament {r['tournament_id']}"
             if query and query not in name.lower():
@@ -62,6 +63,7 @@ class Leaderboard(commands.Cog):
             )
             return
 
+        titles = await self.bot.db.champion_counts(interaction.guild_id)
         medals = ["🥇", "🥈", "🥉"]
         lines = []
         for i, r in enumerate(rows):
@@ -69,8 +71,14 @@ class Leaderboard(commands.Cog):
             won, lost = int(r["won"] or 0), int(r["lost"] or 0)
             settled = won + lost
             acc = f"{(won / settled * 100):.0f}%" if settled else "—"
+            # A crown outranks a points total: it's the thing you can't get by
+            # simply predicting more matches than everyone else.
+            crowns = titles.get(str(r["discord_id"]), 0)
+            crown = f" {'👑' * min(crowns, 3)}" if crowns else ""
+            if crowns > 3:
+                crown = f" 👑×{crowns}"
             lines.append(
-                f"{rank} <@{r['discord_id']}> — **{int(r['points'])}** pts · "
+                f"{rank} <@{r['discord_id']}>{crown} — **{int(r['points'])}** pts · "
                 f"{won}W/{lost}L ({acc})"
             )
 
@@ -79,11 +87,35 @@ class Leaderboard(commands.Cog):
             description="\n".join(lines),
             color=BRAND,
         )
+        if target_id is None:
+            await self._add_champions(embed, interaction.guild_id)
         embed.set_footer(
-            text="Points earned in this server · "
-            "underdog calls pay more · /leaderboard tournament:… for another board"
+            text="Points earned in this server · underdog calls pay more · "
+            "playoffs count double · /leaderboard tournament:… for another board"
         )
         await interaction.response.send_message(embed=embed)
+
+    async def _add_champions(self, embed: discord.Embed, guild_id: int) -> None:
+        """Recent title-holders, under the season table they can't be read off.
+
+        The cumulative board rewards turning up; this rewards finishing first.
+        Shown only on the all-time view — under a single event's board the
+        champion is either the person at the top or nobody yet.
+        """
+        try:
+            recent = await self.bot.db.recent_champions(guild_id, limit=RECENT_TITLES)
+        except Exception:  # noqa: BLE001 - the board matters more than the extra
+            return
+        if not recent:
+            return
+        embed.add_field(
+            name="👑 Champions",
+            value="\n".join(
+                f"<@{r['discord_id']}> — {r['tournament_name'] or 'an event'}"
+                for r in recent
+            )[:1024],
+            inline=False,
+        )
 
     async def _resolve_board(
         self, interaction: discord.Interaction, tournament: str | None
@@ -95,7 +127,7 @@ class Leaderboard(commands.Cog):
         to the server's all-time board when the channel follows nothing.
         """
         if tournament == "all":
-            return None, "All-time leaderboard"
+            return None, "Season table"
 
         if tournament:
             if tournament.isdigit():
@@ -111,7 +143,7 @@ class Leaderboard(commands.Cog):
                     None,
                 )
                 if match is None:
-                    return None, "All-time leaderboard"
+                    return None, "Season table"
                 target = int(match["tournament_id"])
             return target, await self._name_for(interaction.guild_id, target)
 
@@ -123,7 +155,7 @@ class Leaderboard(commands.Cog):
         if subs:
             target = int(subs[0]["tournament_id"])
             return target, subs[0]["tournament_name"] or "Tournament"
-        return None, "All-time leaderboard"
+        return None, "Season table"
 
     async def _name_for(self, guild_id: int, tournament_id: int) -> str:
         rows = await self.bot.db.tournaments_with_predictions(guild_id, limit=100)

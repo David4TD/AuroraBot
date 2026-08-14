@@ -158,6 +158,24 @@ class Database:
                 await self._conn.execute(ddl)
             await self._conn.commit()
 
+        # Step 8: conviction tokens. Existing picks were made under the old
+        # variable-stake model and never had one, so 0 is the honest default.
+        if prediction_columns and "doubled" not in prediction_columns:
+            log.info("Adding the conviction token column to predictions…")
+            await self._conn.execute(
+                "ALTER TABLE predictions ADD COLUMN doubled INTEGER NOT NULL DEFAULT 0"
+            )
+            await self._conn.commit()
+
+        # Step 9: playoff matches count for more. Existing rows keep 1 — the
+        # weight they were actually settled at.
+        if prediction_columns and "weight" not in prediction_columns:
+            log.info("Adding the stage weight column to predictions…")
+            await self._conn.execute(
+                "ALTER TABLE predictions ADD COLUMN weight REAL NOT NULL DEFAULT 1"
+            )
+            await self._conn.commit()
+
         alert_message_columns = await self._table_columns("alert_messages")
         if alert_message_columns and "tournament_id" not in alert_message_columns:
             log.info("Adding tournament columns to alert_messages…")
@@ -173,6 +191,109 @@ class Database:
         assert self._conn is not None
         await self._migrate_games_to_optin()
         await self._repair_digest_vote_tournaments()
+        await self._rescore_onto_fixed_stake()
+
+    async def _rescore_onto_fixed_stake(self) -> int:
+        """Reprice every settled pick under the fixed-stake model. Runs once.
+
+        Points used to be a variable stake (10/25/50 from a per-tournament
+        budget) times the multiplier. They're now a flat base times the
+        multiplier, so old and new totals aren't the same currency — a board
+        holding both would be meaningless. This recomputes the lot.
+
+        Nothing is re-fetched: a settled row already says whether it won, and a
+        win means it backed the winner, so the crowd each match was priced
+        against is recoverable by counting rows. Perfect-day bonuses are
+        recomputed the same way, since rescoring overwrites the row they were
+        added to.
+        """
+        from ..utils.scoring import (
+            MIN_PERFECT_DAY_MATCHES, PERFECT_DAY_BONUS, payout_for,
+        )
+
+        if await self.meta_get("scoring_model") == "fixed_stake":
+            return 0
+
+        cur = await self.conn.execute(
+            """
+            SELECT match_id, guild_id,
+                   COUNT(*) AS voters,
+                   SUM(status = 'won') AS backers
+            FROM predictions
+            WHERE status IN ('won', 'lost')
+            GROUP BY match_id, guild_id
+            """
+        )
+        crowds = {
+            (row["match_id"], row["guild_id"]): (int(row["backers"] or 0),
+                                                int(row["voters"] or 0))
+            for row in await cur.fetchall()
+        }
+        if not crowds:
+            await self.meta_set("scoring_model", "fixed_stake")
+            return 0
+
+        cur = await self.conn.execute(
+            "SELECT id, match_id, guild_id, status, doubled, weight "
+            "FROM predictions WHERE status IN ('won', 'lost')"
+        )
+        rows = list(await cur.fetchall())
+        for row in rows:
+            if row["status"] != "won":
+                await self.conn.execute(
+                    "UPDATE predictions SET points_awarded = 0 WHERE id = ?",
+                    (row["id"],),
+                )
+                continue
+            backers, voters = crowds[(row["match_id"], row["guild_id"])]
+            points = payout_for(
+                backers, voters, doubled=bool(row["doubled"]),
+                weight=float(row["weight"] or 1.0),
+            ).points
+            await self.conn.execute(
+                "UPDATE predictions SET points_awarded = ? WHERE id = ?",
+                (points, row["id"]),
+            )
+
+        # Perfect days, re-awarded onto the last pick of each clean sweep.
+        cur = await self.conn.execute(
+            """
+            SELECT discord_id, guild_id, substr(match_starts_at, 1, 10) AS day,
+                   COUNT(*) AS picks, SUM(status = 'won') AS wins, MAX(id) AS last_id
+            FROM predictions
+            WHERE status IN ('won', 'lost') AND match_starts_at IS NOT NULL
+              AND guild_id IS NOT NULL
+            GROUP BY discord_id, guild_id, day
+            HAVING picks >= ? AND wins = picks
+            """,
+            (MIN_PERFECT_DAY_MATCHES,),
+        )
+        sweeps = list(await cur.fetchall())
+        for row in sweeps:
+            await self.conn.execute(
+                "UPDATE predictions SET points_awarded = points_awarded + ? "
+                "WHERE id = ?",
+                (PERFECT_DAY_BONUS, row["last_id"]),
+            )
+
+        # users.points is the lifetime cross-server total; rebuild it from the
+        # rows rather than trying to adjust it by a delta.
+        await self.conn.execute(
+            """
+            UPDATE users SET points = COALESCE((
+                SELECT SUM(points_awarded) FROM predictions p
+                WHERE p.discord_id = users.discord_id
+            ), 0)
+            """
+        )
+        await self.meta_set("scoring_model", "fixed_stake")
+        await self.conn.commit()
+        log.info(
+            "Rescored %d settled prediction(s) onto the fixed stake, "
+            "re-awarding %d perfect day(s)",
+            len(rows), len(sweeps),
+        )
+        return len(rows)
 
     async def _repair_digest_vote_tournaments(self) -> int:
         """Realign votes that were filed under a league id instead of a stage.
@@ -182,33 +303,39 @@ class Database:
         real tournament id. The two then sat on different leaderboards, so a
         match four people predicted showed one of them.
 
-        ``alert_messages`` holds the authoritative match → tournament mapping
-        and is the tie-breaker here. It's pruned after a few days, so this only
-        repairs recent history — older votes keep counting on the all-time board
-        either way. Safe to re-run: rows already correct don't match.
+        ``alert_messages`` and ``digest_matches`` both hold the authoritative
+        match → tournament mapping, and either will do. Both are consulted
+        because they're pruned on different schedules (3 days and 14) and a
+        match that only ever appeared in a digest was never in the other.
+
+        Older votes than that keep counting on the all-time board either way.
+        Safe to re-run: rows already correct don't match.
         """
+        # The mapping, preferring a reminder's copy and falling back to a
+        # digest's. Repeated in the WHERE because SQLite has no way to name it.
+        source_id = """COALESCE(
+                (SELECT am.tournament_id FROM alert_messages am
+                 WHERE am.match_id = p.match_id
+                   AND am.tournament_id IS NOT NULL LIMIT 1),
+                (SELECT dm.tournament_id FROM digest_matches dm
+                 WHERE dm.match_id = p.match_id
+                   AND dm.tournament_id IS NOT NULL LIMIT 1))"""
+        source_name = """COALESCE(
+                (SELECT am.tournament_name FROM alert_messages am
+                 WHERE am.match_id = p.match_id
+                   AND am.tournament_id IS NOT NULL LIMIT 1),
+                (SELECT dm.tournament_name FROM digest_matches dm
+                 WHERE dm.match_id = p.match_id
+                   AND dm.tournament_id IS NOT NULL LIMIT 1),
+                p.tournament_name)"""
         cur = await self.conn.execute(
-            """
+            f"""
             UPDATE predictions AS p
-            SET tournament_id = (
-                    SELECT am.tournament_id FROM alert_messages am
-                    WHERE am.match_id = p.match_id
-                      AND am.tournament_id IS NOT NULL
-                    LIMIT 1
-                ),
-                tournament_name = COALESCE((
-                    SELECT am.tournament_name FROM alert_messages am
-                    WHERE am.match_id = p.match_id
-                      AND am.tournament_id IS NOT NULL
-                    LIMIT 1
-                ), p.tournament_name)
-            WHERE EXISTS (
-                SELECT 1 FROM alert_messages am
-                WHERE am.match_id = p.match_id
-                  AND am.tournament_id IS NOT NULL
-                  AND am.tournament_id IS NOT p.tournament_id
-            )
-            """
+            SET tournament_id = {source_id},
+                tournament_name = {source_name}
+            WHERE {source_id} IS NOT NULL
+              AND {source_id} IS NOT p.tournament_id
+            """  # noqa: S608 - the fragments are literals, not input
         )
         await self.conn.commit()
         if cur.rowcount and cur.rowcount > 0:
@@ -1080,6 +1207,50 @@ class Database:
         )
         return list(await cur.fetchall())
 
+    async def align_match_tournament(
+        self, match_id: int, tournament_id: int | None, tournament_name: str | None
+    ) -> int:
+        """File every pick on a match under the match's own tournament.
+
+        A prediction records the tournament it counts towards at the moment
+        it's made, from whatever posted the buttons. If any of those sources
+        ever disagrees — a league-wide digest naming the league rather than the
+        stage, say — the picks scatter across two leaderboards and the result
+        card shows a fraction of the people who actually voted.
+
+        Called when the match settles, with the tournament straight off the
+        match, which is the one answer that can't be wrong.
+        """
+        if tournament_id is None:
+            return 0
+        cur = await self.conn.execute(
+            """
+            UPDATE predictions
+            SET tournament_id = ?,
+                tournament_name = COALESCE(?, tournament_name)
+            WHERE match_id = ?
+              AND (tournament_id IS NULL OR tournament_id != ?)
+            """,
+            (int(tournament_id), tournament_name, int(match_id), int(tournament_id)),
+        )
+        await self.conn.commit()
+        return cur.rowcount or 0
+
+    async def set_match_weight(self, match_id: int, weight: float) -> int:
+        """Stamp how much a match's stage counts for onto every pick on it.
+
+        Only rows still open are touched: a settled pick was already paid at
+        the weight it was settled with, and moving the goalposts afterwards
+        would silently rewrite a finished board.
+        """
+        cur = await self.conn.execute(
+            "UPDATE predictions SET weight = ? "
+            "WHERE match_id = ? AND status = 'open'",
+            (float(weight), int(match_id)),
+        )
+        await self.conn.commit()
+        return cur.rowcount or 0
+
     async def match_predictions(
         self, match_id: int, guild_id: int | None
     ) -> list[aiosqlite.Row]:
@@ -1094,6 +1265,7 @@ class Database:
         cur = await self.conn.execute(
             """
             SELECT p.discord_id, p.predicted_team_id, p.predicted_team_name,
+                   p.doubled,
                    COALESCE(u.display_name, 'Someone') AS display_name
             FROM predictions p
             LEFT JOIN users u ON u.discord_id = p.discord_id
@@ -1134,27 +1306,38 @@ class Database:
         return list(await cur.fetchall())
 
     # ── stakes, streaks, tournament boards ───────────────────────────────────
-    async def tournament_spend(
+    async def tokens_spent(
         self, discord_id: int, guild_id: int | None, tournament_id: int | None
     ) -> int:
-        """Points already committed to this tournament, in this server."""
+        """Conviction tokens this member has committed to this tournament.
+
+        Counts open picks too: a token is spent the moment it's declared, or
+        someone could park three on early matches and reclaim them by switching
+        teams later.
+        """
         if guild_id is None or tournament_id is None:
             return 0
         cur = await self.conn.execute(
-            "SELECT COALESCE(SUM(stake), 0) AS spent FROM predictions "
-            "WHERE discord_id = ? AND guild_id = ? AND tournament_id = ?",
+            "SELECT COUNT(*) AS spent FROM predictions "
+            "WHERE discord_id = ? AND guild_id = ? AND tournament_id = ? "
+            "AND doubled = 1",
             (str(discord_id), str(guild_id), tournament_id),
         )
         row = await cur.fetchone()
         return int(row["spent"] or 0)
 
-    async def set_stake(self, prediction_id: int, stake: int) -> None:
-        """Change a stake. Only meaningful while the prediction is open."""
-        await self.conn.execute(
-            "UPDATE predictions SET stake = ? WHERE id = ? AND status = 'open'",
-            (stake, prediction_id),
+    async def set_doubled(self, prediction_id: int, doubled: bool) -> bool:
+        """Spend or reclaim a token. Only while the pick is still open.
+
+        Returns whether anything changed, so a click that raced the match
+        starting can be reported honestly rather than silently ignored.
+        """
+        cur = await self.conn.execute(
+            "UPDATE predictions SET doubled = ? WHERE id = ? AND status = 'open'",
+            (1 if doubled else 0, prediction_id),
         )
         await self.conn.commit()
+        return bool(cur.rowcount)
 
     async def current_streak(self, discord_id: int, guild_id: int | None) -> int:
         """Consecutive wins ending at this member's most recent settled pick.
@@ -1206,6 +1389,99 @@ class Database:
             params,
         )
         return list(await cur.fetchall())
+
+    # ── champions ────────────────────────────────────────────────────────────
+    async def crown_champion(
+        self, guild_id: int, tournament_id: int, tournament_name: str | None,
+        discord_id: str, points: int, won: int, lost: int,
+    ) -> bool:
+        """Record an event's winner. False if this event was already crowned.
+
+        The insert is the lock: two pollers racing on the same finished
+        tournament can't both announce it, because only one row can exist.
+        """
+        cur = await self.conn.execute(
+            """
+            INSERT OR IGNORE INTO tournament_champions
+                (guild_id, tournament_id, tournament_name, discord_id,
+                 points, won, lost)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (str(guild_id), int(tournament_id), tournament_name,
+             str(discord_id), int(points), int(won), int(lost)),
+        )
+        await self.conn.commit()
+        return bool(cur.rowcount)
+
+    async def crowned_tournaments(self, guild_id: int) -> set[int]:
+        cur = await self.conn.execute(
+            "SELECT tournament_id FROM tournament_champions WHERE guild_id = ?",
+            (str(guild_id),),
+        )
+        return {int(r["tournament_id"]) for r in await cur.fetchall()}
+
+    async def champion_counts(self, guild_id: int) -> dict[str, int]:
+        """How many events each member has won here — the crown count."""
+        cur = await self.conn.execute(
+            "SELECT discord_id, COUNT(*) AS titles FROM tournament_champions "
+            "WHERE guild_id = ? GROUP BY discord_id",
+            (str(guild_id),),
+        )
+        return {str(r["discord_id"]): int(r["titles"]) for r in await cur.fetchall()}
+
+    async def recent_champions(
+        self, guild_id: int, limit: int = 5
+    ) -> list[aiosqlite.Row]:
+        cur = await self.conn.execute(
+            "SELECT * FROM tournament_champions WHERE guild_id = ? "
+            "ORDER BY crowned_at DESC LIMIT ?",
+            (str(guild_id), limit),
+        )
+        return list(await cur.fetchall())
+
+    async def open_predictions_in_tournament(
+        self, guild_id: int, tournament_id: int
+    ) -> int:
+        """Picks still waiting on a result. A board isn't final until zero."""
+        cur = await self.conn.execute(
+            "SELECT COUNT(*) AS n FROM predictions "
+            "WHERE guild_id = ? AND tournament_id = ? AND status = 'open'",
+            (str(guild_id), int(tournament_id)),
+        )
+        row = await cur.fetchone()
+        return int(row["n"] or 0)
+
+    async def guilds_with_predictions(self) -> list[str]:
+        cur = await self.conn.execute(
+            "SELECT DISTINCT guild_id FROM predictions WHERE guild_id IS NOT NULL"
+        )
+        return [str(r["guild_id"]) for r in await cur.fetchall()]
+
+    async def channels_for_tournament(
+        self, guild_id: int, tournament_id: int
+    ) -> list[int]:
+        """Where this event was actually talked about, so a crowning lands there.
+
+        Reminders and digests both record the channel they went to; a standing
+        subscription covers an event whose recent posts have been pruned.
+        """
+        cur = await self.conn.execute(
+            """
+            SELECT DISTINCT channel_id FROM (
+                SELECT channel_id FROM alert_messages
+                WHERE guild_id = ? AND tournament_id = ?
+                UNION
+                SELECT d.channel_id FROM match_digests d
+                JOIN digest_matches m ON m.digest_id = d.id
+                WHERE d.guild_id = ? AND m.tournament_id = ?
+                UNION
+                SELECT channel_id FROM alert_subscriptions
+                WHERE guild_id = ? AND tournament_id = ?
+            )
+            """,
+            (str(guild_id), int(tournament_id)) * 3,
+        )
+        return [int(r["channel_id"]) for r in await cur.fetchall()]
 
     async def tournaments_with_predictions(
         self, guild_id: int, limit: int = 25

@@ -12,19 +12,29 @@ from __future__ import annotations
 
 import logging
 
-from .scoring import MIN_PERFECT_DAY_MATCHES, PERFECT_DAY_BONUS, payout_for
+from .scoring import (
+    MIN_PERFECT_DAY_MATCHES, PERFECT_DAY_BONUS, payout_for, stage_weight,
+)
 
 log = logging.getLogger("aurorabot.settle")
 
 
-async def settle_match(bot, match_id: int, winner_id: int) -> int:
+async def settle_match(bot, match_id: int, winner_id: int, match: dict | None = None
+                       ) -> int:
     """Resolve every open prediction on one match. Returns how many settled.
 
     The underdog multiplier is priced **per server**, so the crowd a pick is
     measured against is the one that saw it — a server where everyone backed
     the favourite pays differently from one that was split.
+
+    Pass *match* and every pick on it is filed under the match's own tournament
+    first, so the board the result card prints can't be missing the people the
+    same card just listed as calling it.
     """
     db = bot.db
+    if match is not None:
+        await _align_tournament(db, match_id, match)
+        await _stamp_weight(db, match_id, match)
     preds = await db.open_predictions_for_match(match_id)
     if not preds:
         return 0
@@ -45,13 +55,11 @@ async def settle_match(bot, match_id: int, winner_id: int) -> int:
 
         for p in group:
             won = int(p["predicted_team_id"]) == winner_id
-            if won:
-                # Streak is read before this result lands, so it counts the run
-                # *leading into* this pick rather than including it.
-                streak = await db.current_streak(int(p["discord_id"]), guild_id)
-                points = payout_for(int(p["stake"]), backers, voters, streak).points
-            else:
-                points = 0
+            points = (
+                payout_for(backers, voters, doubled=bool(p["doubled"]),
+                           weight=float(p["weight"] or 1.0)).points
+                if won else 0
+            )
             await db.resolve_prediction(
                 prediction_id=p["id"],
                 status="won" if won else "lost",
@@ -61,13 +69,38 @@ async def settle_match(bot, match_id: int, winner_id: int) -> int:
             settled += 1
             log.info(
                 "Resolved #%s (match %s, guild %s): %s for %d pts "
-                "[stake %s, %d/%d backers]",
+                "[%d/%d backers%s]",
                 p["id"], match_id, guild_id, "won" if won else "lost",
-                points, p["stake"], backers, voters,
+                points, backers, voters, ", doubled" if p["doubled"] else "",
             )
             if won:
                 await _maybe_perfect_day(bot, p, guild_id)
     return settled
+
+
+async def _align_tournament(db, match_id: int, match: dict) -> None:
+    """Never worth failing a payout over: log it and pay out anyway."""
+    tournament = match.get("tournament") or {}
+    try:
+        moved = await db.align_match_tournament(
+            match_id, tournament.get("id"), tournament.get("name")
+        )
+    except Exception:  # noqa: BLE001 - the points matter more than the filing
+        log.exception("could not align predictions for match %s", match_id)
+        return
+    if moved:
+        log.info(
+            "Filed %d pick(s) on match %s under tournament %s",
+            moved, match_id, tournament.get("id"),
+        )
+
+
+async def _stamp_weight(db, match_id: int, match: dict) -> None:
+    """Record how much this stage counts for, before anything is priced."""
+    try:
+        await db.set_match_weight(match_id, stage_weight(match))
+    except Exception:  # noqa: BLE001 - a missing weight just means face value
+        log.exception("could not stamp the stage weight for match %s", match_id)
 
 
 async def _maybe_perfect_day(bot, prediction, guild_id) -> None:

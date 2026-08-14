@@ -28,7 +28,7 @@ from ..utils.pickers import game_of, team_choices, tournament_choices
 from ..utils.matches import opponents, tournament_id
 from ..utils.predictions import submit_prediction
 from ..utils.settle import settle_match
-from ..utils.stakes import stake_panel
+from ..utils.conviction import pick_panel
 from ..utils.regions import event_flag
 from ..utils.tiers import filter_for
 
@@ -76,7 +76,7 @@ class TeamButton(discord.ui.Button):
             tournament_id=tournament_id(self.match),
             tournament_name=(self.match.get("tournament") or {}).get("name"),
         )
-        view = await stake_panel(
+        view = await pick_panel(
             self.cog.bot.db, interaction.user.id, int(self.match["id"])
         )
         await interaction.response.edit_message(content=message, view=view)
@@ -283,7 +283,7 @@ class Predictions(commands.Cog):
             winner_id = (match.get("winner") or {}).get("id")
             if winner_id is None:
                 continue
-            await settle_match(self.bot, match_id, int(winner_id))
+            await settle_match(self.bot, match_id, int(winner_id), match)
 
     @resolve_loop.before_loop
     async def _before(self) -> None:

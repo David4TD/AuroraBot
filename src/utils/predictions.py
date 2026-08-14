@@ -9,17 +9,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 
-from .scoring import (
-    DEFAULT_STAKE,
-    FREE_STAKE,
-    TOURNAMENT_BUDGET,
-    clamp_stake,
-)
+from .scoring import BASE_POINTS, MAX_MULTIPLIER, TOKENS_PER_TOURNAMENT
 from .tournaments import parse_dt
-
-# Kept for the resolver's fallback path when a match had too few voters to
-# price; the live model is in utils.scoring.
-WIN_REWARD = 25
 
 
 class Outcome(str, Enum):
@@ -57,10 +48,9 @@ async def submit_prediction(
 ) -> tuple[Outcome, str]:
     """Record (or amend) a user's pick. Returns the outcome and a message.
 
-    A new pick opens at the default stake if the tournament budget can afford
-    it, otherwise at the largest that fits — down to :data:`FREE_STAKE`, so
-    running out of budget never blocks a prediction. The stake can be raised
-    afterwards from the ephemeral panel; see ``utils.stakes``.
+    Every pick is worth the same base; what it finally pays depends on how much
+    of the server agreed. The one lever is a conviction token, offered on the
+    ephemeral panel that follows — see ``utils.conviction``.
     """
     existing = await db.get_prediction(user_id, match_id)
 
@@ -77,8 +67,6 @@ async def submit_prediction(
 
     if existing is None:
         await db.ensure_user(user_id, display_name)
-        spent = await db.tournament_spend(user_id, guild_id, tournament_id)
-        stake = clamp_stake(DEFAULT_STAKE, spent)
         await db.create_prediction(
             discord_id=user_id,
             match_id=match_id,
@@ -87,22 +75,21 @@ async def submit_prediction(
             predicted_team_name=team["name"],
             opponent_team_name=opponent_name,
             match_starts_at=begin_at,
-            stake=stake,
+            stake=BASE_POINTS,
             guild_id=guild_id,
             tournament_id=tournament_id,
             tournament_name=tournament_name,
         )
-        left = max(0, TOURNAMENT_BUDGET - spent - stake)
         note = (
-            f"Staked **{stake}** · **{left}** left this tournament."
-            if tournament_id
-            else f"Staked **{stake}**."
+            f"Worth **{BASE_POINTS}** if it lands — up to "
+            f"**{int(BASE_POINTS * MAX_MULTIPLIER)}** if the room's against you."
         )
-        if stake == FREE_STAKE and tournament_id:
-            note = (
-                f"Budget's gone, so this rides at the free **{FREE_STAKE}** — "
-                f"still counts, just worth less."
+        if tournament_id:
+            left = TOKENS_PER_TOURNAMENT - await db.tokens_spent(
+                user_id, guild_id, tournament_id
             )
+            if left > 0:
+                note += f"\n💥 **{left}** double down{'' if left == 1 else 's'} left."
         return (
             Outcome.CREATED,
             f"🎲 You backed **{team['name']}**. {note}",
@@ -126,7 +113,9 @@ async def submit_prediction(
         predicted_team_name=team["name"],
         opponent_team_name=opponent_name,
     )
-    return (
-        Outcome.CHANGED,
-        f"🔄 Switched your pick to **{team['name']}** — stake unchanged.",
+    tail = (
+        " — your double down rides with it."
+        if existing["doubled"]
+        else "."
     )
+    return (Outcome.CHANGED, f"🔄 Switched your pick to **{team['name']}**{tail}")

@@ -35,9 +35,9 @@ from ..utils.guildgames import blocked_message
 from ..utils.guildprefs import alert_lead
 from ..utils.matches import league_id, opponents, team_ids, tournament_id
 from ..utils.predictions import submit_prediction
-from ..utils.scoring import potential_odds
+from ..utils.scoring import payout_for, potential_odds
 from ..utils.settle import settle_match
-from ..utils.stakes import stake_panel
+from ..utils.conviction import pick_panel
 from ..utils.subscriptions import wants_votes
 from ..utils.regions import event_flag, region_flag
 from ..utils.resultcard import build_result_card
@@ -130,7 +130,7 @@ class VoteButton(
             tournament_id=row["tournament_id"],
             tournament_name=row["tournament_name"],
         )
-        view = await stake_panel(db, interaction.user.id, int(row["match_id"]))
+        view = await pick_panel(db, interaction.user.id, int(row["match_id"]))
         await interaction.response.send_message(message, view=view, ephemeral=True)
 
 
@@ -721,7 +721,7 @@ class Alerts(commands.Cog):
             winner = match.get("winner_id")
             if winner is not None:
                 try:
-                    await settle_match(self.bot, match_id, int(winner))
+                    await settle_match(self.bot, match_id, int(winner), match)
                 except Exception:  # noqa: BLE001 - the result still goes out
                     log.exception("could not settle match %s", match_id)
 
@@ -836,14 +836,19 @@ class Alerts(commands.Cog):
         icons = self.bot.icons
         for team in teams[:2]:
             backers = [
-                p["display_name"] for p in picks
+                # A doubled-down pick is public the moment it can't be changed:
+                # spending a token is a statement, and it should read like one.
+                p["display_name"] + (" 💥" if p["doubled"] else "")
+                for p in picks
                 if int(p["predicted_team_id"]) == int(team["id"])
             ]
             share = f"{len(backers)}/{len(picks)}"
-            # Predictions are closed, so the multiplier is settled — showing it
-            # is what makes backing the unpopular side feel like a call.
+            # Predictions are closed, so the multiplier is settled — showing
+            # what this side is now worth is what makes backing the unpopular
+            # one feel like a call rather than a coin toss.
             odds = potential_odds(len(backers), len(picks))
-            price = f" · ×{odds:.1f}" if odds > 1.0 else ""
+            worth = payout_for(len(backers), len(picks)).points
+            price = f" · ×{odds:.1f} · {worth} pts" if odds > 1.0 else f" · {worth} pts"
             value = ", ".join(backers[:12]) or "_Nobody_"
             if len(backers) > 12:
                 value += f" _+{len(backers) - 12} more_"

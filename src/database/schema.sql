@@ -194,6 +194,13 @@ CREATE TABLE IF NOT EXISTS predictions (
     opponent_team_name  TEXT,
     match_starts_at TEXT,
     stake           INTEGER NOT NULL DEFAULT 10,
+    -- A conviction token: doubles this match's payout, three per tournament,
+    -- declared with the pick and locked once the match starts.
+    doubled         INTEGER NOT NULL DEFAULT 0,
+    -- How much the stage this match belongs to counts for: 2 for a final,
+    -- 1.5 for the rest of a bracket, 1 for the group stage. Stamped on the row
+    -- when the match settles so a board never has to re-derive it.
+    weight          REAL NOT NULL DEFAULT 1,
     status          TEXT NOT NULL DEFAULT 'open',  -- open | won | lost | void
     -- What this pick actually paid out. Points are per server, so they have to
     -- live on the row that knows which server it came from; summing these is
@@ -209,6 +216,21 @@ CREATE TABLE IF NOT EXISTS predictions (
 -- cold. Autocomplete has ~3 seconds total and a League of Legends fetch alone
 -- takes about three, so the first keystroke after a Force Update used to fail
 -- outright. Reading this back is a local sub-millisecond query.
+-- Who won each event, per server. Points reset every tournament, so this is
+-- the permanent record: the season table ranks by cumulative points, and a
+-- champion count sits alongside it as the thing that can't be farmed by volume.
+CREATE TABLE IF NOT EXISTS tournament_champions (
+    guild_id        TEXT NOT NULL,
+    tournament_id   INTEGER NOT NULL,
+    tournament_name TEXT,
+    discord_id      TEXT NOT NULL,
+    points          INTEGER NOT NULL DEFAULT 0,
+    won             INTEGER NOT NULL DEFAULT 0,
+    lost            INTEGER NOT NULL DEFAULT 0,
+    crowned_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (guild_id, tournament_id)
+);
+
 CREATE TABLE IF NOT EXISTS tournament_cache (
     game        TEXT PRIMARY KEY,
     payload     TEXT NOT NULL,          -- JSON array as returned by the filter
