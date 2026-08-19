@@ -51,7 +51,10 @@ from ..utils.predictions import Outcome, submit_prediction
 from ..utils.conviction import pick_panel
 from ..utils.subscriptions import wants_votes
 from ..utils.regions import region_flag
-from ..utils.schedule import iso_date, local_now, local_today, within_day
+from ..utils.schedule import (
+    is_after_midnight, iso_date, local_now, local_today,
+    within_digest_window,
+)
 from ..utils.tiers import filter_for
 from ..utils.tournaments import parse_dt
 
@@ -296,7 +299,7 @@ class Digest(commands.Cog):
             if digest_id is None:
                 return False
 
-        matches = await self._todays_matches(sub, today)
+        matches = await self._todays_matches(sub, today, digest_id)
         if not matches:
             # The claim row stays, recording "nothing on today", so the sweep
             # stops re-querying the API for the rest of the day.
@@ -335,6 +338,9 @@ class Digest(commands.Cog):
             header = self._build_header(
                 sub, today, chunk,
                 total=len(matches), part=part, parts=len(chunks),
+                # The same zone the day's window was measured in, so "after
+                # midnight" on the banner means what it meant during selection.
+                tz=self.bot.settings.digest_tz,
             )
             if part == 0 and votes:
                 await self._add_standings(
@@ -393,8 +399,10 @@ class Digest(commands.Cog):
                 )
         return view
 
-    async def _todays_matches(self, sub, today) -> list[tuple[dict, tuple[dict, dict]]]:
-        """Tier-1 matches for this subscription's tournament falling on *today*."""
+    async def _todays_matches(
+        self, sub, today, digest_id: int | None = None
+    ) -> list[tuple[dict, tuple[dict, dict]]]:
+        """Tier-1 matches for this subscription, today and just past midnight."""
         tz = self.bot.settings.digest_tz
         slug = resolve_slug(sub["game"], self.bot.settings.cs_slug)
         try:
@@ -406,16 +414,31 @@ class Digest(commands.Cog):
 
         by_league = (sub["scope"] or "game") == "league"
         wanted = int(sub["league_id"] if by_league else sub["tournament_id"])
+        lookahead = self.bot.settings.digest_lookahead_hours
+        # Anything an earlier digest for this subscription already carried. The
+        # lookahead deliberately overlaps the next day, so without this a match
+        # caught last night would be listed again this morning -- by which time
+        # it has usually started and its buttons are dead.
+        try:
+            already = await self.bot.db.already_digested(
+                int(sub["id"]), exclude_digest_id=digest_id
+            )
+        except Exception:  # noqa: BLE001 - a repeat beats an empty digest
+            log.exception("could not check what digest %s already listed", digest_id)
+            already = set()
+
         out: list[tuple[dict, tuple[dict, dict]]] = []
         seen: set[int] = set()
         for match in filter_for(self.bot.settings, feed):
             mid = int(match.get("id", 0))
-            if mid in seen:
+            if mid in seen or mid in already:
                 continue
             got = match_league_id(match) if by_league else match_tournament_id(match)
             if got != wanted:
                 continue
-            if not within_day(parse_dt(match.get("begin_at")), today, tz):
+            if not within_digest_window(
+                parse_dt(match.get("begin_at")), today, tz, lookahead
+            ):
                 continue
             teams = _teams_of(match)
             if teams is None:
@@ -427,7 +450,7 @@ class Digest(commands.Cog):
         return out[:MAX_MATCHES]
 
     def _build_header(
-        self, sub, today, chunk, *, total: int, part: int, parts: int
+        self, sub, today, chunk, *, total: int, part: int, parts: int, tz
     ) -> discord.Embed:
         """The banner above the day's cards.
 
@@ -448,6 +471,17 @@ class Digest(commands.Cog):
             inline=True,
         )
         embed.add_field(name="Game", value=label_for(sub["game"]), inline=True)
+        early = [m for m, _ in chunk
+                 if is_after_midnight(parse_dt(m.get("begin_at")), today, tz)]
+        if early:
+            # These would otherwise look like a mistake: a card dated tomorrow
+            # under a banner that says Today.
+            embed.add_field(
+                name="Overnight",
+                value=f"{len(early)} of these start after midnight — "
+                      f"predict them now, not in the morning.",
+                inline=False,
+            )
         embed.set_footer(
             text=f"{today:%a %d %b} · times in your local zone · "
             f"tap a team to predict the winner"

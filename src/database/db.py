@@ -1108,6 +1108,26 @@ class Database:
         )
         return await cur.fetchone()
 
+    async def already_digested(
+        self, subscription_id: int, exclude_digest_id: int | None = None
+    ) -> set[int]:
+        """Matches this subscription has already put in a digest.
+
+        The digest window overlaps the next morning on purpose, so the same
+        match can fall inside two consecutive days. Listing it once is the
+        point; listing it twice is noise.
+        """
+        cur = await self.conn.execute(
+            """
+            SELECT DISTINCT m.match_id
+            FROM digest_matches m
+            JOIN match_digests d ON d.id = m.digest_id
+            WHERE d.subscription_id = ? AND (? IS NULL OR d.id != ?)
+            """,
+            (int(subscription_id), exclude_digest_id, exclude_digest_id),
+        )
+        return {int(r["match_id"]) for r in await cur.fetchall()}
+
     async def prune_digests(self, days: int = 14) -> int:
         cur = await self.conn.execute(
             "DELETE FROM match_digests WHERE created_at < datetime('now', ?)",

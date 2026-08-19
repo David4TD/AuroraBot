@@ -57,6 +57,38 @@ def within_day(moment: datetime | None, day: date, tz) -> bool:
     return start <= moment.astimezone(UTC) < end
 
 
+def digest_window(day: date, tz, lookahead_hours: int = 0
+                  ) -> tuple[datetime, datetime]:
+    """UTC bounds of a digest's coverage: a local day plus a lookahead.
+
+    A strict calendar day cannot advertise a match that starts *at* midnight.
+    The digest for that day goes out at the same instant the match begins, so
+    its vote buttons are dead before anyone sees them — and the day before,
+    which is when someone could still have predicted it, never mentioned it.
+
+    Extending the window past midnight is what fixes that: the day's schedule
+    carries the small hours of the next morning, while they're still callable.
+    """
+    start, end = day_window(day, tz)
+    return start, end + timedelta(hours=max(0, lookahead_hours))
+
+
+def within_digest_window(
+    moment: datetime | None, day: date, tz, lookahead_hours: int = 0
+) -> bool:
+    if moment is None:
+        return False
+    start, end = digest_window(day, tz, lookahead_hours)
+    return start <= moment.astimezone(UTC) < end
+
+
+def is_after_midnight(moment: datetime | None, day: date, tz) -> bool:
+    """True for a match the window reached forward into the next day to catch."""
+    if moment is None:
+        return False
+    return moment.astimezone(UTC) >= day_window(day, tz)[1]
+
+
 def local_hhmm(moment: datetime, tz) -> str:
     return moment.astimezone(tz).strftime("%H:%M")
 
