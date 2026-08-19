@@ -176,6 +176,16 @@ class Database:
             )
             await self._conn.commit()
 
+        # Step 10: the odds a pick was priced at. Derivable from the points,
+        # but only by dividing the weight and the token back out; the weekly
+        # callout asks "who read the room best" often enough to store it.
+        if prediction_columns and "odds" not in prediction_columns:
+            log.info("Adding the odds column to predictions…")
+            await self._conn.execute(
+                "ALTER TABLE predictions ADD COLUMN odds REAL NOT NULL DEFAULT 1"
+            )
+            await self._conn.commit()
+
         alert_message_columns = await self._table_columns("alert_messages")
         if alert_message_columns and "tournament_id" not in alert_message_columns:
             log.info("Adding tournament columns to alert_messages…")
@@ -192,6 +202,7 @@ class Database:
         await self._migrate_games_to_optin()
         await self._repair_digest_vote_tournaments()
         await self._rescore_onto_fixed_stake()
+        await self._backfill_odds()
 
     async def _rescore_onto_fixed_stake(self) -> int:
         """Reprice every settled pick under the fixed-stake model. Runs once.
@@ -344,6 +355,40 @@ class Database:
                 cur.rowcount,
             )
         return cur.rowcount or 0
+
+    async def _backfill_odds(self) -> int:
+        """Fill in the odds of picks settled before the column existed.
+
+        Recoverable without the API for the same reason the rescore was: a
+        settled row records whether it won, and a win means it backed the
+        winner, so each match's crowd is a matter of counting rows.
+        """
+        from ..utils.scoring import payout_multiplier
+
+        if await self.meta_get("odds_backfilled") == "yes":
+            return 0
+        cur = await self.conn.execute(
+            """
+            SELECT match_id, guild_id, COUNT(*) AS voters,
+                   SUM(status = 'won') AS backers
+            FROM predictions
+            WHERE status IN ('won', 'lost')
+            GROUP BY match_id, guild_id
+            """
+        )
+        rows = list(await cur.fetchall())
+        for row in rows:
+            odds = payout_multiplier(int(row["backers"] or 0), int(row["voters"] or 0))
+            await self.conn.execute(
+                "UPDATE predictions SET odds = ? "
+                "WHERE match_id = ? AND guild_id IS ? AND status IN ('won', 'lost')",
+                (odds, row["match_id"], row["guild_id"]),
+            )
+        await self.meta_set("odds_backfilled", "yes")
+        await self.conn.commit()
+        if rows:
+            log.info("Backfilled the odds on %d settled match/server pair(s)", len(rows))
+        return len(rows)
 
     async def _migrate_games_to_optin(self) -> None:
         """Flip /games from opt-out to opt-in without silencing existing servers.
@@ -1178,13 +1223,14 @@ class Database:
         return list(await cur.fetchall())
 
     async def resolve_prediction(
-        self, prediction_id: int, status: str, points_delta: int, discord_id: str
+        self, prediction_id: int, status: str, points_delta: int, discord_id: str,
+        odds: float = 1.0,
     ) -> None:
         awarded = points_delta if status == "won" else 0
         await self.conn.execute(
-            "UPDATE predictions SET status = ?, points_awarded = ?, "
+            "UPDATE predictions SET status = ?, points_awarded = ?, odds = ?, "
             "resolved_at = datetime('now') WHERE id = ?",
-            (status, awarded, prediction_id),
+            (status, awarded, float(odds), prediction_id),
         )
         if status == "won":
             # users.points stays as the lifetime total across every server,
@@ -1387,6 +1433,200 @@ class Database:
             LIMIT ?
             """,  # noqa: S608 - `where` is built from literals only
             params,
+        )
+        return list(await cur.fetchall())
+
+    # ── badges, rivalries and the weekly callout ─────────────────────────────
+    async def award_badge(
+        self, guild_id: int, discord_id: int, badge: str, detail: str | None
+    ) -> bool:
+        """Record a badge. False if they already had it.
+
+        The first time is the one that counts, so a repeat is an ignored insert
+        rather than an update — the earned_at date stays true.
+        """
+        cur = await self.conn.execute(
+            "INSERT OR IGNORE INTO achievements "
+            "(guild_id, discord_id, badge, detail) VALUES (?, ?, ?, ?)",
+            (str(guild_id), str(discord_id), badge, detail),
+        )
+        await self.conn.commit()
+        return bool(cur.rowcount)
+
+    async def badges_for(self, guild_id: int, discord_id: int) -> list[aiosqlite.Row]:
+        cur = await self.conn.execute(
+            "SELECT badge, detail, earned_at FROM achievements "
+            "WHERE guild_id = ? AND discord_id = ? ORDER BY earned_at",
+            (str(guild_id), str(discord_id)),
+        )
+        return list(await cur.fetchall())
+
+    async def badge_holders(self, guild_id: int) -> dict[str, int]:
+        """How many people here hold each badge — the rarity line."""
+        cur = await self.conn.execute(
+            "SELECT badge, COUNT(*) AS holders FROM achievements "
+            "WHERE guild_id = ? GROUP BY badge",
+            (str(guild_id),),
+        )
+        return {str(r["badge"]): int(r["holders"]) for r in await cur.fetchall()}
+
+    async def was_only_caller(
+        self, match_id: int, guild_id: int, discord_id: int
+    ) -> bool:
+        """True when exactly one person in this server got this match right."""
+        cur = await self.conn.execute(
+            "SELECT discord_id FROM predictions "
+            "WHERE match_id = ? AND guild_id = ? AND status = 'won'",
+            (int(match_id), str(guild_id)),
+        )
+        winners = [str(r["discord_id"]) for r in await cur.fetchall()]
+        return winners == [str(discord_id)]
+
+    async def token_record(
+        self, discord_id: int, guild_id: int, tournament_id: int
+    ) -> dict:
+        """Conviction tokens spent in one event, and how many of them landed."""
+        cur = await self.conn.execute(
+            """
+            SELECT COUNT(*) AS spent, SUM(status = 'won') AS won
+            FROM predictions
+            WHERE discord_id = ? AND guild_id = ? AND tournament_id = ?
+              AND doubled = 1
+            """,
+            (str(discord_id), str(guild_id), int(tournament_id)),
+        )
+        row = await cur.fetchone()
+        return {"spent": int(row["spent"] or 0), "won": int(row["won"] or 0)}
+
+    async def perfect_week(
+        self, discord_id: int, guild_id: int, minimum: int
+    ) -> bool:
+        """Every pick settled in the last 7 days won, and there were enough.
+
+        Measured on resolution rather than match date: a week is the stretch a
+        member was actually playing, and a result that lands late still belongs
+        to the week it landed in.
+        """
+        cur = await self.conn.execute(
+            """
+            SELECT COUNT(*) AS settled, SUM(status = 'won') AS won
+            FROM predictions
+            WHERE discord_id = ? AND guild_id = ? AND status IN ('won', 'lost')
+              AND resolved_at >= datetime('now', '-7 days')
+            """,
+            (str(discord_id), str(guild_id)),
+        )
+        row = await cur.fetchone()
+        settled, won = int(row["settled"] or 0), int(row["won"] or 0)
+        return settled >= minimum and settled == won
+
+    async def best_call_this_week(self, guild_id: int) -> aiosqlite.Row | None:
+        """The longest-odds correct call of the last 7 days in one server."""
+        cur = await self.conn.execute(
+            """
+            SELECT p.id, p.discord_id, p.odds, p.points_awarded, p.doubled,
+                   p.predicted_team_name, p.opponent_team_name, p.tournament_name,
+                   COALESCE(u.display_name, 'Someone') AS display_name
+            FROM predictions p
+            LEFT JOIN users u ON u.discord_id = p.discord_id
+            WHERE p.guild_id = ? AND p.status = 'won'
+              AND p.resolved_at >= datetime('now', '-7 days')
+            ORDER BY p.odds DESC, p.points_awarded DESC, p.id ASC
+            LIMIT 1
+            """,
+            (str(guild_id),),
+        )
+        return await cur.fetchone()
+
+    async def claim_weekly_callout(
+        self, guild_id: int, week: str, discord_id: str | None,
+        prediction_id: int | None,
+    ) -> bool:
+        """Claim this server's callout slot for *week*. False if already taken.
+
+        Claimed before posting, so a crash between claim and post costs one
+        missed callout rather than risking a duplicate every hour.
+        """
+        cur = await self.conn.execute(
+            "INSERT OR IGNORE INTO weekly_callouts "
+            "(guild_id, week, discord_id, prediction_id) VALUES (?, ?, ?, ?)",
+            (str(guild_id), week, str(discord_id) if discord_id else None,
+             prediction_id),
+        )
+        await self.conn.commit()
+        return bool(cur.rowcount)
+
+    async def channels_with_predictions(self, guild_id: int) -> list[int]:
+        """This server's prediction channels, busiest first.
+
+        The weekly callout needs somewhere to go and there is no "main" channel
+        to ask for. A channel's share of recent reminders is the closest thing
+        to where the game is actually being played; a standing subscription
+        covers a server whose reminders have aged out.
+        """
+        cur = await self.conn.execute(
+            """
+            SELECT channel_id, COUNT(*) AS activity FROM (
+                SELECT channel_id FROM alert_messages WHERE guild_id = ?
+                UNION ALL
+                SELECT channel_id FROM match_digests WHERE guild_id = ?
+                UNION ALL
+                SELECT channel_id FROM alert_subscriptions
+                WHERE guild_id = ? AND predictions = 1
+            )
+            GROUP BY channel_id
+            ORDER BY activity DESC
+            """,
+            (str(guild_id), str(guild_id), str(guild_id)),
+        )
+        return [int(r["channel_id"]) for r in await cur.fetchall()]
+
+    async def head_to_head(
+        self, guild_id: int, a: int, b: int
+    ) -> list[aiosqlite.Row]:
+        """Every settled match both members predicted, newest first.
+
+        A rivalry is only meaningful over matches both actually called, so this
+        is an inner join on the match rather than a comparison of two totals.
+        """
+        cur = await self.conn.execute(
+            """
+            SELECT x.match_id, x.status AS a_status, y.status AS b_status,
+                   x.points_awarded AS a_points, y.points_awarded AS b_points,
+                   x.predicted_team_name AS a_team,
+                   y.predicted_team_name AS b_team,
+                   x.tournament_name, x.resolved_at
+            FROM predictions x
+            JOIN predictions y
+              ON y.match_id = x.match_id AND y.guild_id IS x.guild_id
+            WHERE x.guild_id = ? AND x.discord_id = ? AND y.discord_id = ?
+              AND x.status IN ('won', 'lost') AND y.status IN ('won', 'lost')
+            ORDER BY x.resolved_at DESC
+            """,
+            (str(guild_id), str(a), str(b)),
+        )
+        return list(await cur.fetchall())
+
+    async def most_contested(
+        self, guild_id: int, discord_id: int
+    ) -> list[aiosqlite.Row]:
+        """Who this member has shared the most matches with — their rivals."""
+        cur = await self.conn.execute(
+            """
+            SELECT y.discord_id, COUNT(*) AS shared,
+                   COALESCE(u.display_name, 'Someone') AS display_name
+            FROM predictions x
+            JOIN predictions y
+              ON y.match_id = x.match_id AND y.guild_id IS x.guild_id
+             AND y.discord_id != x.discord_id
+            LEFT JOIN users u ON u.discord_id = y.discord_id
+            WHERE x.guild_id = ? AND x.discord_id = ?
+              AND x.status IN ('won', 'lost') AND y.status IN ('won', 'lost')
+            GROUP BY y.discord_id
+            ORDER BY shared DESC
+            LIMIT 10
+            """,
+            (str(guild_id), str(discord_id)),
         )
         return list(await cur.fetchall())
 

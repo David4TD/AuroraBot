@@ -34,6 +34,7 @@ COGS = [
     "src.cogs.predictions",
     "src.cogs.leaderboard",
     "src.cogs.champions",
+    "src.cogs.accolades",
     "src.cogs.alerts",
     "src.cogs.digest",
     "src.cogs.lineups",

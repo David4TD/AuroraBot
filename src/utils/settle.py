@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 
+from .badges import evaluate as evaluate_badges
 from .scoring import (
     MIN_PERFECT_DAY_MATCHES, PERFECT_DAY_BONUS, payout_for, stage_weight,
 )
@@ -53,29 +54,71 @@ async def settle_match(bot, match_id: int, winner_id: int, match: dict | None = 
             1 for x in all_picks if int(x["predicted_team_id"]) == winner_id
         ) or sum(1 for x in group if int(x["predicted_team_id"]) == winner_id)
 
+        resolved = []
         for p in group:
             won = int(p["predicted_team_id"]) == winner_id
-            points = (
-                payout_for(backers, voters, doubled=bool(p["doubled"]),
-                           weight=float(p["weight"] or 1.0)).points
-                if won else 0
+            weight = float(p["weight"] or 1.0)
+            payout = payout_for(
+                backers, voters, doubled=bool(p["doubled"]), weight=weight
             )
+            points = payout.points if won else 0
             await db.resolve_prediction(
                 prediction_id=p["id"],
                 status="won" if won else "lost",
                 points_delta=points,
                 discord_id=p["discord_id"],
+                odds=payout.multiplier,
             )
             settled += 1
+            resolved.append((p, payout, weight, won))
             log.info(
                 "Resolved #%s (match %s, guild %s): %s for %d pts "
-                "[%d/%d backers%s]",
+                "[%d/%d backers, x%.2f%s]",
                 p["id"], match_id, guild_id, "won" if won else "lost",
-                points, backers, voters, ", doubled" if p["doubled"] else "",
+                points, backers, voters, payout.multiplier,
+                ", doubled" if p["doubled"] else "",
             )
+
+        # Bonuses and badges only once the whole room is settled. "Was anyone
+        # else right?" cannot be answered halfway through the group -- asked
+        # inside the loop above, the first correct pick read as the only one.
+        for p, payout, weight, won in resolved:
             if won:
                 await _maybe_perfect_day(bot, p, guild_id)
+            # After the perfect-day bonus, so the points a badge reads are the
+            # final ones for this pick rather than the payout alone.
+            await _award_badges(bot, p, guild_id, payout.multiplier, weight, won)
     return settled
+
+
+async def _award_badges(bot, prediction, guild_id, odds, weight, won) -> list[str]:
+    """Hand out anything this pick just earned. Never blocks a payout.
+
+    Badges are decoration on top of a settled result: if working out whether
+    someone swept the week fails, the week's points still stand.
+    """
+    try:
+        earned = await evaluate_badges(
+            bot.db, prediction, guild_id, odds=odds, weight=weight, won=won
+        )
+    except Exception:  # noqa: BLE001 - the points matter more than the badge
+        log.exception("could not evaluate badges for prediction %s", prediction["id"])
+        return []
+
+    new_badges = []
+    for key, detail in earned:
+        try:
+            if await bot.db.award_badge(
+                int(guild_id), int(prediction["discord_id"]), key, detail
+            ):
+                new_badges.append(key)
+                log.info(
+                    "Badge %s earned by %s in guild %s (%s)",
+                    key, prediction["discord_id"], guild_id, detail,
+                )
+        except Exception:  # noqa: BLE001
+            log.exception("could not award badge %s", key)
+    return new_badges
 
 
 async def _align_tournament(db, match_id: int, match: dict) -> None:
@@ -122,6 +165,9 @@ async def _maybe_perfect_day(bot, prediction, guild_id) -> None:
         return
     await bot.db.award_bonus(
         int(prediction["discord_id"]), int(prediction["id"]), PERFECT_DAY_BONUS
+    )
+    await bot.db.award_badge(
+        int(guild_id), int(prediction["discord_id"]), "perfect_day", day
     )
     log.info(
         "Perfect day for %s in guild %s on %s: +%d",

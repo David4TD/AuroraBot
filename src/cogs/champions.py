@@ -117,6 +117,11 @@ class Champions(commands.Cog):
         )
         if not crowned:
             return                      # another pass got there first
+        # The badge is the permanent, per-member half of the same fact: the
+        # champions table is per event, this is what shows on their profile.
+        await self.bot.db.award_badge(
+            guild_id, int(winner["discord_id"]), "champion", title
+        )
         log.info(
             "Champion of %s in guild %s: %s (%s pts)",
             title, guild_id, winner["discord_id"], winner["points"],

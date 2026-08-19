@@ -201,6 +201,10 @@ CREATE TABLE IF NOT EXISTS predictions (
     -- 1.5 for the rest of a bracket, 1 for the group stage. Stamped on the row
     -- when the match settles so a board never has to re-derive it.
     weight          REAL NOT NULL DEFAULT 1,
+    -- The underdog multiplier this pick was actually priced at. Derivable from
+    -- the points, but only by dividing back out the weight and the token, and
+    -- "who read the room best" is a question worth being able to ask directly.
+    odds            REAL NOT NULL DEFAULT 1,
     status          TEXT NOT NULL DEFAULT 'open',  -- open | won | lost | void
     -- What this pick actually paid out. Points are per server, so they have to
     -- live on the row that knows which server it came from; summing these is
@@ -216,6 +220,30 @@ CREATE TABLE IF NOT EXISTS predictions (
 -- cold. Autocomplete has ~3 seconds total and a League of Legends fetch alone
 -- takes about three, so the first keystroke after a Force Update used to fail
 -- outright. Reading this back is a local sub-millisecond query.
+-- Permanent, per server. The leaderboard rewards being right most often;
+-- these reward being right in a particular way, so someone who will never top
+-- a board still has something to collect. One row per member per badge --
+-- earning it twice is the same badge, and the first time is the one that counts.
+CREATE TABLE IF NOT EXISTS achievements (
+    guild_id    TEXT NOT NULL,
+    discord_id  TEXT NOT NULL,
+    badge       TEXT NOT NULL,
+    detail      TEXT,
+    earned_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (guild_id, discord_id, badge)
+);
+
+-- One weekly callout per server per ISO week, claimed before it is posted so a
+-- restart inside the posting window cannot produce a second one.
+CREATE TABLE IF NOT EXISTS weekly_callouts (
+    guild_id    TEXT NOT NULL,
+    week        TEXT NOT NULL,          -- ISO year-week, e.g. 2026-W34
+    discord_id  TEXT,
+    prediction_id INTEGER,
+    posted_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (guild_id, week)
+);
+
 -- Who won each event, per server. Points reset every tournament, so this is
 -- the permanent record: the season table ranks by cumulative points, and a
 -- champion count sits alongside it as the thing that can't be farmed by volume.
@@ -239,6 +267,7 @@ CREATE TABLE IF NOT EXISTS tournament_cache (
 
 CREATE INDEX IF NOT EXISTS idx_predictions_status  ON predictions(status);
 CREATE INDEX IF NOT EXISTS idx_predictions_match   ON predictions(match_id);
+CREATE INDEX IF NOT EXISTS idx_predictions_resolved ON predictions(guild_id, resolved_at);
 CREATE INDEX IF NOT EXISTS idx_predictions_board   ON predictions(guild_id, tournament_id, status);
 CREATE INDEX IF NOT EXISTS idx_alertsub_game       ON alert_subscriptions(game);
 CREATE INDEX IF NOT EXISTS idx_followed_user       ON followed_teams(discord_id);
