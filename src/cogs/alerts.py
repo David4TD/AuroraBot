@@ -67,6 +67,9 @@ PRUNE_EVERY_POLLS = 60  # ~hourly at the default 60s poll interval
 # Finished-match lookups per poll. One request each, so this bounds the cost
 # of a backlog after downtime rather than firing dozens at once.
 RESULTS_PER_POLL = 10
+# Voters listed per team on a live alert, one per line. Deep enough for a busy
+# channel, shallow enough that two columns don't push the match off a phone.
+MAX_BACKERS_SHOWN = 12
 
 
 class VoteButton(
@@ -849,9 +852,12 @@ class Alerts(commands.Cog):
             odds = potential_odds(len(backers), len(picks))
             worth = payout_for(len(backers), len(picks)).points
             price = f" · ×{odds:.1f} · {worth} pts" if odds > 1.0 else f" · {worth} pts"
-            value = ", ".join(backers[:12]) or "_Nobody_"
-            if len(backers) > 12:
-                value += f" _+{len(backers) - 12} more_"
+            # One name per line: the two sides sit in side-by-side columns, and
+            # a wrapped comma-separated run makes it impossible to see at a
+            # glance which way the room actually leaned.
+            value = "\n".join(backers[:MAX_BACKERS_SHOWN]) or "_Nobody_"
+            if len(backers) > MAX_BACKERS_SHOWN:
+                value += f"\n_+{len(backers) - MAX_BACKERS_SHOWN} more_"
             embed.add_field(
                 name=f"{icons.icon(team)} {team['name']} · {share}{price}".strip()[:256],
                 value=value[:1024],
