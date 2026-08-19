@@ -31,7 +31,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 import discord
 from discord import app_commands
@@ -436,9 +436,15 @@ class Digest(commands.Cog):
             got = match_league_id(match) if by_league else match_tournament_id(match)
             if got != wanted:
                 continue
-            if not within_digest_window(
-                parse_dt(match.get("begin_at")), today, tz, lookahead
-            ):
+            begin = parse_dt(match.get("begin_at"))
+            if not within_digest_window(begin, today, tz, lookahead):
+                continue
+            # A digest is a prediction sheet, and predictions close at kick-off,
+            # so a match already under way is a dead row with dead buttons. At
+            # the default midnight post nothing has started yet and this never
+            # fires; it earns its keep for a server that moves its digest to
+            # the evening, where half the day would otherwise be history.
+            if begin is not None and begin <= datetime.now(timezone.utc):
                 continue
             teams = _teams_of(match)
             if teams is None:
