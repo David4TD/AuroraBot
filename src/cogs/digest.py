@@ -299,7 +299,7 @@ class Digest(commands.Cog):
             if digest_id is None:
                 return False
 
-        matches = await self._todays_matches(sub, today, digest_id)
+        matches = await self._todays_matches(sub, today)
         if not matches:
             # The claim row stays, recording "nothing on today", so the sweep
             # stops re-querying the API for the rest of the day.
@@ -400,7 +400,7 @@ class Digest(commands.Cog):
         return view
 
     async def _todays_matches(
-        self, sub, today, digest_id: int | None = None
+        self, sub, today
     ) -> list[tuple[dict, tuple[dict, dict]]]:
         """Tier-1 matches for this subscription, today and just past midnight."""
         tz = self.bot.settings.digest_tz
@@ -415,23 +415,17 @@ class Digest(commands.Cog):
         by_league = (sub["scope"] or "game") == "league"
         wanted = int(sub["league_id"] if by_league else sub["tournament_id"])
         lookahead = self.bot.settings.digest_lookahead_hours
-        # Anything an earlier digest for this subscription already carried. The
-        # lookahead deliberately overlaps the next day, so without this a match
-        # caught last night would be listed again this morning -- by which time
-        # it has usually started and its buttons are dead.
-        try:
-            already = await self.bot.db.already_digested(
-                int(sub["id"]), exclude_digest_id=digest_id
-            )
-        except Exception:  # noqa: BLE001 - a repeat beats an empty digest
-            log.exception("could not check what digest %s already listed", digest_id)
-            already = set()
-
+        # Nothing is suppressed for having appeared on an earlier card. The
+        # lookahead overlaps the next morning, so a 05:00 match is caught by
+        # both days -- and hiding it from the card for the day it is actually
+        # played, while it is still hours away and perfectly predictable, is a
+        # worse outcome than mentioning it twice. The filter below removes the
+        # only listing that was ever really noise: one that has already begun.
         out: list[tuple[dict, tuple[dict, dict]]] = []
         seen: set[int] = set()
         for match in filter_for(self.bot.settings, feed):
             mid = int(match.get("id", 0))
-            if mid in seen or mid in already:
+            if mid in seen:
                 continue
             got = match_league_id(match) if by_league else match_tournament_id(match)
             if got != wanted:
