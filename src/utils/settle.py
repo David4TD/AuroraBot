@@ -14,7 +14,8 @@ import logging
 
 from .badges import evaluate as evaluate_badges
 from .scoring import (
-    MIN_PERFECT_DAY_MATCHES, PERFECT_DAY_BONUS, payout_for, stage_weight,
+    MIN_PERFECT_DAY_MATCHES, PERFECT_DAY_BONUS, payout_for, penalty_for,
+    stage_weight,
 )
 
 log = logging.getLogger("aurorabot.settle")
@@ -61,7 +62,16 @@ async def settle_match(bot, match_id: int, winner_id: int, match: dict | None = 
             payout = payout_for(
                 backers, voters, doubled=bool(p["doubled"]), weight=weight
             )
-            points = payout.points if won else 0
+            if won:
+                points = payout.points
+            else:
+                # A doubled miss costs the base back, capped at what they've
+                # actually banked in this event. Read before the row settles,
+                # so it can't count itself.
+                banked = await db.tournament_total(
+                    int(p["discord_id"]), guild_id, p["tournament_id"]
+                )
+                points = penalty_for(bool(p["doubled"]), banked)
             await db.resolve_prediction(
                 prediction_id=p["id"],
                 status="won" if won else "lost",

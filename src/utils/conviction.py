@@ -2,9 +2,12 @@
 
 Deliberately *optional*. Tapping a team is still one tap and counts for full
 value — this panel rides along on the ephemeral confirmation for anyone who
-wants to commit a token. Members who ignore it play a complete game; members
-who use it get the only real decision in the format, which is knowing which
-three matches a tournament are worth doubling.
+wants to commit a token. Members who ignore it play a complete game and can
+never lose a point; members who use it take the only real risk in the format.
+
+A token doubles the match if the call lands and costs the base back if it
+doesn't, so the copy here always names both halves. A button that only
+advertises the upside would be lying about what it does.
 
 Reclaimable right up until kick-off, then locked: changing your mind about a
 match that hasn't started is reading, not gaming the system. Once it starts,
@@ -20,7 +23,9 @@ import logging
 import discord
 
 from .predictions import is_open
-from .scoring import DOUBLE_DOWN, TOKENS_PER_TOURNAMENT, tokens_left
+from .scoring import (
+    DOUBLE_DOWN, DOUBLE_DOWN_PENALTY, TOKENS_PER_TOURNAMENT, tokens_left,
+)
 
 log = logging.getLogger("aurorabot.conviction")
 
@@ -82,7 +87,8 @@ class DoubleDownButton(discord.ui.Button):
         if want:
             content = (
                 f"💥 Doubled down on **{row['predicted_team_name']}** — "
-                f"{DOUBLE_DOWN}× if it lands, nothing if it doesn't. "
+                f"**{DOUBLE_DOWN}×** if it lands, "
+                f"**−{DOUBLE_DOWN_PENALTY}** if it doesn't. "
                 f"**{left}** left this tournament."
             )
         else:

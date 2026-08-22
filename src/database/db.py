@@ -1226,20 +1226,34 @@ class Database:
         self, prediction_id: int, status: str, points_delta: int, discord_id: str,
         odds: float = 1.0,
     ) -> None:
-        awarded = points_delta if status == "won" else 0
+        """Settle one pick. *points_delta* may be negative for a doubled miss.
+
+        A pick that lost can cost points but can never earn them, whatever the
+        caller passes — that invariant belongs here rather than in the two
+        places that settle, so no future caller can quietly break a board.
+        """
+        points_delta = (
+            int(points_delta) if status == "won" else min(0, int(points_delta))
+        )
         await self.conn.execute(
             "UPDATE predictions SET status = ?, points_awarded = ?, odds = ?, "
             "resolved_at = datetime('now') WHERE id = ?",
-            (status, awarded, float(odds), prediction_id),
+            (status, points_delta, float(odds), prediction_id),
         )
-        if status == "won":
+        if points_delta:
             # users.points stays as the lifetime total across every server,
             # which is what /profile shows in a DM. Per-server totals come from
-            # summing predictions.points_awarded instead.
+            # summing predictions.points_awarded instead. Clamped at zero so a
+            # run of bad bets can't leave someone with a negative lifetime.
             await self.conn.execute(
-                "UPDATE users SET points = points + ?, predictions_won = predictions_won + 1 "
+                "UPDATE users SET points = MAX(0, points + ?) WHERE discord_id = ?",
+                (int(points_delta), discord_id),
+            )
+        if status == "won":
+            await self.conn.execute(
+                "UPDATE users SET predictions_won = predictions_won + 1 "
                 "WHERE discord_id = ?",
-                (points_delta, discord_id),
+                (discord_id,),
             )
         await self.conn.commit()
 
@@ -1336,7 +1350,10 @@ class Database:
             """
             SELECT p.discord_id,
                    COALESCE(u.display_name, 'Someone') AS display_name,
-                   COALESCE(SUM(p.points_awarded), 0) AS points,
+                   -- Doubled misses subtract, and the clamp at settle time is
+                   -- per tournament; on an all-time board several events could
+                   -- still sum below zero, so the floor is repeated here.
+                   MAX(0, COALESCE(SUM(p.points_awarded), 0)) AS points,
                    SUM(p.status = 'won')  AS won,
                    SUM(p.status = 'lost') AS lost
             FROM predictions p
@@ -1371,6 +1388,20 @@ class Database:
         )
         row = await cur.fetchone()
         return int(row["spent"] or 0)
+
+    async def tournament_total(
+        self, discord_id: int, guild_id: int | None, tournament_id: int | None
+    ) -> int:
+        """Points banked in one event, which is what a doubled miss can cost."""
+        if guild_id is None or tournament_id is None:
+            return 0
+        cur = await self.conn.execute(
+            "SELECT COALESCE(SUM(points_awarded), 0) AS total FROM predictions "
+            "WHERE discord_id = ? AND guild_id = ? AND tournament_id = ?",
+            (str(discord_id), str(guild_id), int(tournament_id)),
+        )
+        row = await cur.fetchone()
+        return int(row["total"] or 0)
 
     async def set_doubled(self, prediction_id: int, doubled: bool) -> bool:
         """Spend or reclaim a token. Only while the pick is still open.

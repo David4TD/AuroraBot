@@ -9,7 +9,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 
-from .scoring import BASE_POINTS, MAX_MULTIPLIER, TOKENS_PER_TOURNAMENT
+from .scoring import (
+    BASE_POINTS, DOUBLE_DOWN_PENALTY, MAX_MULTIPLIER, TOKENS_PER_TOURNAMENT,
+)
 from .tournaments import parse_dt
 
 
@@ -89,7 +91,10 @@ async def submit_prediction(
                 user_id, guild_id, tournament_id
             )
             if left > 0:
-                note += f"\n💥 **{left}** double down{'' if left == 1 else 's'} left."
+                note += (
+                    f"\n💥 **{left}** double down{'' if left == 1 else 's'} left "
+                    f"— doubles it, or costs **{DOUBLE_DOWN_PENALTY}** if you're wrong."
+                )
         return (
             Outcome.CREATED,
             f"🎲 You backed **{team['name']}**. {note}",
