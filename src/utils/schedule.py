@@ -57,28 +57,62 @@ def within_day(moment: datetime | None, day: date, tz) -> bool:
     return start <= moment.astimezone(UTC) < end
 
 
-def digest_window(day: date, tz, lookahead_hours: int = 0
-                  ) -> tuple[datetime, datetime]:
-    """UTC bounds of a digest's coverage: a local day plus a lookahead.
+# A match kicking off before this hour is an overnight fixture: it belongs to
+# the *previous* day's digest, which went out a day earlier, rather than to the
+# card for the date it happens to fall on. Without it a 00:20 match is listed
+# by a midnight digest twenty minutes before it starts, which is a listing
+# nobody can act on.
+OVERNIGHT_UNTIL = 10
 
-    A strict calendar day cannot advertise a match that starts *at* midnight.
-    The digest for that day goes out at the same instant the match begins, so
-    its vote buttons are dead before anyone sees them — and the day before,
-    which is when someone could still have predicted it, never mentioned it.
+# How far after a digest posts the handover can sit. Only matters for a
+# schedule set later than OVERNIGHT_UNTIL, where the two would otherwise
+# coincide: a match at exactly the post time would belong to the card going out
+# that second, have already started by the time it did, and so be dropped from
+# that one and excluded from the one before — listed by neither.
+SEAM = timedelta(minutes=15)
 
-    Extending the window past midnight is what fixes that: the day's schedule
-    carries the small hours of the next morning, while they're still callable.
+
+def post_at(day: date, tz, hour: int) -> datetime:
+    """When *day*'s digest goes out, in local time."""
+    return datetime.combine(day, time(hour, 0), tzinfo=tz)
+
+
+def handover(day: date, tz, digest_hour: int) -> datetime:
+    """When *day*'s digest takes over from the one before, in local time.
+
+    Normally :data:`OVERNIGHT_UNTIL`, so everything between midnight and 10am
+    rides with the card posted the day before it is played. A schedule set
+    later than that hands over shortly after it posts instead — otherwise an
+    18:00 digest would own a window opening at 10:00, and every match in
+    between would already have started by the time the card went out.
     """
-    start, end = day_window(day, tz)
-    return start, end + timedelta(hours=max(0, lookahead_hours))
+    return max(
+        post_at(day, tz, OVERNIGHT_UNTIL),
+        post_at(day, tz, int(digest_hour)) + SEAM,
+    )
+
+
+def digest_window(day: date, tz, hour: int = 0) -> tuple[datetime, datetime]:
+    """UTC bounds of what one digest covers, as ``[start, end)``.
+
+    A digest day runs handover to handover rather than midnight to midnight,
+    so the night's matches sit on the card posted the evening before they are
+    played. Consecutive windows abut exactly, which is what makes every match
+    fall inside one and only one — no lookahead to tune, no cross-day dedupe,
+    and no way for a fixture to be listed twice or missed entirely.
+    """
+    return (
+        handover(day, tz, hour).astimezone(UTC),
+        handover(day + timedelta(days=1), tz, hour).astimezone(UTC),
+    )
 
 
 def within_digest_window(
-    moment: datetime | None, day: date, tz, lookahead_hours: int = 0
+    moment: datetime | None, day: date, tz, hour: int = 0
 ) -> bool:
     if moment is None:
         return False
-    start, end = digest_window(day, tz, lookahead_hours)
+    start, end = digest_window(day, tz, hour)
     return start <= moment.astimezone(UTC) < end
 
 

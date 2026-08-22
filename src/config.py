@@ -66,11 +66,6 @@ class Settings:
     # midnight survives daylight-saving changes.
     digest_tz_name: str = "Australia/Sydney"
     digest_hour: int = 0
-    # How far past local midnight a day's schedule still reaches. Six hours
-    # covers the European late-night slots that land in the small hours of an
-    # Australian morning, which a strict calendar day could never advertise in
-    # time to be predicted.
-    digest_lookahead_hours: int = 6
 
     @property
     def digest_tz(self):
@@ -98,7 +93,4 @@ def load_settings() -> Settings:
         tier_allowlist=parse_tier_list(_get("TIERS", "s,a")),
         digest_tz_name=_get("DIGEST_TZ", "Australia/Sydney") or "Australia/Sydney",
         digest_hour=max(0, min(23, int(_get("DIGEST_HOUR", "0") or 0))),
-        digest_lookahead_hours=max(
-            0, min(12, int(_get("DIGEST_LOOKAHEAD_HOURS", "6") or 6))
-        ),
     )

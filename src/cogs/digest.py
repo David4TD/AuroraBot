@@ -52,7 +52,7 @@ from ..utils.conviction import pick_panel
 from ..utils.subscriptions import wants_votes
 from ..utils.regions import region_flag
 from ..utils.schedule import (
-    is_after_midnight, iso_date, local_now, local_today,
+    digest_window, is_after_midnight, iso_date, local_now, local_today,
     within_digest_window,
 )
 from ..utils.tiers import filter_for
@@ -271,6 +271,14 @@ class Digest(commands.Cog):
         """Post one subscription's schedule for *today*. True if a message went out."""
         channel_id = int(sub["channel_id"])
         date_key = iso_date(today)
+        # The window runs to the moment the *next* digest posts, so it needs
+        # this server's own hour and zone, not the deployment defaults.
+        over = (
+            await self.bot.db.guild_settings(int(sub["guild_id"]))
+            if sub["guild_id"] else None
+        )
+        tz = digest_tz(self.bot.settings, over)
+        hour = digest_hour(self.bot.settings, over)
 
         if not force:
             claimed = await self.bot.db.create_digest(
@@ -299,7 +307,7 @@ class Digest(commands.Cog):
             if digest_id is None:
                 return False
 
-        matches = await self._todays_matches(sub, today)
+        matches = await self._todays_matches(sub, today, tz, hour, force=force)
         if not matches:
             # The claim row stays, recording "nothing on today", so the sweep
             # stops re-querying the API for the rest of the day.
@@ -340,7 +348,7 @@ class Digest(commands.Cog):
                 total=len(matches), part=part, parts=len(chunks),
                 # The same zone the day's window was measured in, so "after
                 # midnight" on the banner means what it meant during selection.
-                tz=self.bot.settings.digest_tz,
+                tz=tz,
             )
             if part == 0 and votes:
                 await self._add_standings(
@@ -400,10 +408,10 @@ class Digest(commands.Cog):
         return view
 
     async def _todays_matches(
-        self, sub, today
+        self, sub, today, tz=None, hour: int = 0, *, force: bool = False
     ) -> list[tuple[dict, tuple[dict, dict]]]:
-        """Tier-1 matches for this subscription, today and just past midnight."""
-        tz = self.bot.settings.digest_tz
+        """Tier-1 matches this digest owns: today, up to the next post."""
+        tz = tz or self.bot.settings.digest_tz
         slug = resolve_slug(sub["game"], self.bot.settings.cs_slug)
         try:
             feed = await self.bot.api.upcoming_matches(slug=slug, per_page=FETCH_SIZE)
@@ -414,13 +422,9 @@ class Digest(commands.Cog):
 
         by_league = (sub["scope"] or "game") == "league"
         wanted = int(sub["league_id"] if by_league else sub["tournament_id"])
-        lookahead = self.bot.settings.digest_lookahead_hours
-        # Nothing is suppressed for having appeared on an earlier card. The
-        # lookahead overlaps the next morning, so a 05:00 match is caught by
-        # both days -- and hiding it from the card for the day it is actually
-        # played, while it is still hours away and perfectly predictable, is a
-        # worse outcome than mentioning it twice. The filter below removes the
-        # only listing that was ever really noise: one that has already begun.
+        # Nothing is suppressed for having appeared on an earlier card, and
+        # nothing needs to be: each digest owns a window that ends where the
+        # next one begins, so a match belongs to exactly one of them.
         out: list[tuple[dict, tuple[dict, dict]]] = []
         seen: set[int] = set()
         for match in filter_for(self.bot.settings, feed):
@@ -431,7 +435,7 @@ class Digest(commands.Cog):
             if got != wanted:
                 continue
             begin = parse_dt(match.get("begin_at"))
-            if not within_digest_window(begin, today, tz, lookahead):
+            if not self._owns(begin, today, tz, hour, force):
                 continue
             # A digest is a prediction sheet, and predictions close at kick-off,
             # so a match already under way is a dead row with dead buttons. At
@@ -448,6 +452,22 @@ class Digest(commands.Cog):
 
         out.sort(key=lambda pair: parse_dt(pair[0].get("begin_at")) or datetime.max)
         return out[:MAX_MATCHES]
+
+    @staticmethod
+    def _owns(begin, day, tz, hour: int, force: bool) -> bool:
+        """Whether this digest is the one that should carry *begin*.
+
+        The scheduled post owns a fixed window so that consecutive days can't
+        overlap. `/schedule` is a deliberate catch-up, though, and someone
+        running it at noon wants what is left of today — not the window that
+        starts at tonight's post — so a forced run reaches back to now.
+        """
+        if begin is None:
+            return False
+        if not force:
+            return within_digest_window(begin, day, tz, hour)
+        _, end = digest_window(day, tz, hour)
+        return datetime.now(timezone.utc) <= begin.astimezone(timezone.utc) < end
 
     def _build_header(
         self, sub, today, chunk, *, total: int, part: int, parts: int, tz
