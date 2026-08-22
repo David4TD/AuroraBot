@@ -30,6 +30,7 @@ from discord.ext import commands, tasks
 from ..services.pandascore import PandaScoreError
 from ..utils.choices import GAME_CHOICES
 from ..utils.embeds import BRAND, GREEN, match_embed
+from ..utils.livecard import build_live_card
 from ..utils.games import key_for_videogame, label_for, rank_by_name, resolve_slug
 from ..utils.guildgames import blocked_message
 from ..utils.guildprefs import alert_lead
@@ -793,7 +794,12 @@ class Alerts(commands.Cog):
                     VoteButton(side, team["name"], self.bot.icons.partial(team))
                 )
 
-        embed = match_embed(match, sub["game"], self.bot.icons)
+        # A reminder is still a fixture (nothing to score yet); once it's live
+        # it gets the same card /live shows, so the two never disagree.
+        if state == "reminder":
+            embed = match_embed(match, sub["game"], self.bot.icons)
+        else:
+            embed = await build_live_card(self.bot, match, sub["game"])
         if state != "reminder" and len(teams) >= 2:
             # Predictions have closed, so naming who backed whom spoils nothing
             # and gives the channel something to argue about while it plays.
