@@ -63,9 +63,17 @@ FINAL_WEIGHT = 2.0
 PLAYOFF_WEIGHT = 1.5
 
 # Matched against the match name and its stage. PandaScore is consistent about
-# these: "Grand final", "Semifinal 1: T1 vs GEN", stages called "Playoffs".
+# these: "Grand final", "Semifinal 1: T1 vs GEN", "Upper bracket final",
+# stages called "Playoffs".
 _FINAL = re.compile(r"\b(grand final|grand-final)\b|\bfinals?\b")
-_NOT_THE_FINAL = re.compile(r"\b(semi|quarter|lower|upper|winners|losers)[ -]?finals?\b")
+# A qualified final is not *the* final. The optional "bracket" matters: a
+# double-elimination event runs an upper and a lower bracket final before the
+# grand final, and PandaScore words them exactly that way — without it they
+# read as three grand finals in the same event, each paying double.
+_NOT_THE_FINAL = re.compile(
+    r"\b(semi|quarter|lower|upper|winners|losers)"
+    r"(\s+bracket)?[\s-]?finals?\b"
+)
 _KNOCKOUT = re.compile(
     r"\b(semi|quarter)[ -]?finals?\b|\b(playoffs?|knockout|bracket|elimination"
     r"|decider|top ?8|top ?4)\b"
