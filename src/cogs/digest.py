@@ -48,7 +48,7 @@ from ..utils.matches import (
     tournament_id as match_tournament_id,
 )
 from ..utils.predictions import Outcome, submit_prediction
-from ..utils.conviction import pick_panel
+from ..utils.conviction import as_view, pick_panel
 from ..utils.subscriptions import wants_votes
 from ..utils.regions import region_flag
 from ..utils.schedule import (
@@ -190,7 +190,7 @@ class DigestVoteButton(
         view = await pick_panel(
             interaction.client.db, interaction.user.id, self.match_id
         )
-        await interaction.response.send_message(message, view=view, ephemeral=True)
+        await interaction.response.send_message(message, view=as_view(view), ephemeral=True)
 
 
 class Digest(commands.Cog):

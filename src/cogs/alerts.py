@@ -38,7 +38,7 @@ from ..utils.matches import league_id, opponents, team_ids, tournament_id
 from ..utils.predictions import submit_prediction
 from ..utils.scoring import payout_for, potential_odds
 from ..utils.settle import settle_match
-from ..utils.conviction import pick_panel
+from ..utils.conviction import as_view, pick_panel
 from ..utils.subscriptions import wants_votes
 from ..utils.regions import event_flag, region_flag
 from ..utils.resultcard import build_result_card
@@ -135,7 +135,7 @@ class VoteButton(
             tournament_name=row["tournament_name"],
         )
         view = await pick_panel(db, interaction.user.id, int(row["match_id"]))
-        await interaction.response.send_message(message, view=view, ephemeral=True)
+        await interaction.response.send_message(message, view=as_view(view), ephemeral=True)
 
 
 def can_manage(user) -> bool:

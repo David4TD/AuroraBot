@@ -127,3 +127,19 @@ async def pick_panel(db, user_id: int, match_id: int) -> ConvictionView | None:
     except Exception:  # noqa: BLE001 - the pick is already saved; this is extra
         log.exception("could not build the conviction panel for %s", user_id)
         return None
+
+
+def as_view(panel: ConvictionView | None):
+    """Translate "no panel" for :meth:`InteractionResponse.send_message`.
+
+    ``send_message`` calls ``is_finished()`` on whatever it is handed unless
+    the value is ``MISSING``, so passing ``None`` raises an AttributeError deep
+    inside discord.py and the click surfaces to the member as "This interaction
+    failed" — even though their pick was already saved.
+
+    ``None`` still means something here (there is nothing to offer: the tokens
+    are gone, or the match has started), so it is translated at the boundary
+    rather than removed. ``edit_message`` is different and takes ``None``
+    happily, where it means "take the buttons away".
+    """
+    return panel if panel is not None else discord.utils.MISSING
