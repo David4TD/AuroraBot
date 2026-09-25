@@ -45,23 +45,23 @@ def _elapsed(match: dict) -> str:
 
 
 def map_progress(match: dict) -> str:
-    """``Map 4 of 5``, or as much of it as the data supports.
+    """``Map 4 of 5`` once a series is under way, ``Bo5`` before it is.
 
-    A series in progress has some games marked finished and the rest not, so
-    the one being played is the first unfinished one. Falls back to the
-    best-of alone when the API hasn't filled ``games`` in yet.
+    "Map 1 of 5" says nothing "Bo5" doesn't, and reads as progress where there
+    is none — every series starts there, so on a match that has just gone live
+    it was pure noise next to an equally empty "live 0m". Once a map has
+    actually been won the count becomes information and takes over.
     """
     games = match.get("games") or []
     best_of = match.get("number_of_games")
     played = sum(
         1 for g in games if (g.get("status") or "").lower() == "finished"
     )
-    if games:
-        current = min(played + 1, len(games))
+    if games and played:
         total = int(best_of) if best_of else len(games)
-        return f"Map {current} of {total}"
+        return f"Map {min(played + 1, total)} of {total}"
     if best_of and int(best_of) > 1:
-        return f"Best of {best_of}"
+        return f"Bo{best_of}"
     return ""
 
 
@@ -130,8 +130,13 @@ async def build_live_card(
 
 
 def _live_for(match: dict) -> str:
+    """``live 1h 12m``, and nothing at all for the first minute.
+
+    "live 0m" is a worse way of saying what the 🔴 LIVE in the title already
+    says, and it's the state every match passes through on the way in.
+    """
     elapsed = _elapsed(match)
-    return f"live {elapsed}" if elapsed else ""
+    return f"live {elapsed}" if elapsed and elapsed != "0m" else ""
 
 
 async def _add_pick_counts(bot, embed, match, teams, guild_id) -> None:

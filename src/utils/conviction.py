@@ -35,8 +35,11 @@ class DoubleDownButton(discord.ui.Button):
         self.prediction_id = prediction_id
         self.doubled = doubled
         super().__init__(
+            # The risk goes on the button itself. Reading it only in the
+            # confirmation means reading it after committing.
             label=("Take the double down back" if doubled
-                   else f"Double down ({left} left)"),
+                   else f"Double down · ×{DOUBLE_DOWN} or −{DOUBLE_DOWN_PENALTY}"
+                        f" ({left} left)"),
             style=(discord.ButtonStyle.secondary if doubled
                    else discord.ButtonStyle.success),
             emoji="💥",

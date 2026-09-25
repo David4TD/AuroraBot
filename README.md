@@ -85,34 +85,68 @@ settled predictions with who called them right.
 
 Pick a winner with `/predict`, or tap a team button on a match reminder or the
 daily schedule. You can change your mind until kick-off, then it locks.
+`/scoring` explains all of this inside Discord.
 
 ```
-points = stake × underdog × streak
+a correct call = 10 × underdog × stage × (2 if doubled down)
+a wrong call   = 0, or −10 if you doubled down
 ```
+
+**One stake for everyone.** Every pick is worth the same 10 before the room is
+taken into account. You can't bet your season on one match, and an ordinary
+wrong call costs nothing at all.
 
 **Underdog.** Priced off your own server's votes, not a bookmaker. If eight
 people back the favourite and two call the upset, the upset pays **3×** and the
-favourite pays **1.25×**. Capped at 3×, and it stays flat until at least three
-people have voted — two people disagreeing isn't a market.
+favourite **1.25×**. It's the exact reciprocal up to 2×, then bends and
+approaches 3× without reaching it — a 1-in-10 read and a 1-in-50 read aren't
+different reads. Flat until at least three people have voted: two people
+disagreeing isn't a market.
 
-**Streak.** +10% per consecutive correct call before this one, up to **1.5×**.
-A miss resets it.
+**Stage.** A grand final counts **×2**, the rest of a bracket **×1.5**, the
+group stage face value. Late matches being worth more is what keeps an event
+winnable for someone who joined halfway through.
 
-**Stakes.** Every pick is staked from a **500-point budget per tournament**.
-The default is 10, and the ephemeral confirmation lets you raise it to 25 or 50 —
-so one tap is still a complete play, and picking *which* matches to commit to is
-the actual skill. Run the budget dry and picks still count at a free 5; nobody
-gets locked out.
+### 💥 Double down
+
+Three per tournament, per server. Declare one with the button on the private
+confirmation that follows your pick, any time before kick-off — it's
+reclaimable right up until the match starts, and locked after.
+
+|            | you called it | you didn't |
+|------------|---------------|------------|
+| normal     | +10 to +30    | 0          |
+| doubled    | +20 to +60    | **−10**    |
+
+**This is the only way to lose points.** That's deliberate: without a downside
+spending a token was free upside and the only question was timing. With one,
+doubling a match you aren't sure about is a genuinely bad idea, and choosing
+*which* three matches an event is worth it on is the actual skill.
+
+Three things worth knowing:
+
+- **A board can dip but never go negative.** The loss is capped at what you've
+  actually banked in that tournament — on 4 points you lose 4, on nothing you
+  lose nothing.
+- **The stage multiplies the reward, not the risk.** A doubled grand final pays
+  up to 120 and still only costs 10.
+- **Spent is spent**, win or lose. Tokens come back at the next tournament;
+  they don't carry over.
+
+Switching your pick to the other team before kick-off carries the token with
+it. Your name shows with a 💥 on the live alert once the match starts, so
+everyone can see who committed.
 
 **Perfect day.** Call every one of a day's matches right (two or more) for a
-**+50** bonus.
+**+20** bonus.
 
 Boards are **per tournament, per server**. `/leaderboard` shows whatever the
-channel follows; `/leaderboard tournament:…` picks another, including all-time.
-`/profile` shows your record here, with your lifetime total in the footer.
+channel follows; `/leaderboard tournament:…` picks another, including the
+season table. `/profile` shows your record here, `/badges` what you've earned,
+`/rival` your head-to-head with anyone.
 
-When a match goes live the alert shows the split *and* the multiplier each side
-was playing for.
+When a match goes live the alert shows the split *and* what each side is now
+worth.
 
 ## ⚙️ Per-server settings
 
