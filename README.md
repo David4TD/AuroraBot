@@ -104,8 +104,13 @@ different reads. Flat until at least three people have voted: two people
 disagreeing isn't a market.
 
 **Stage.** A grand final counts **×2**, the rest of a bracket **×1.5**, the
-group stage face value. Late matches being worth more is what keeps an event
+group stage face value. This is automatic — everyone gets it, it costs nothing
+and risks nothing. Late matches being worth more is what keeps an event
 winnable for someone who joined halfway through.
+
+> **The two ×2s are different things.** The stage bonus belongs to the match;
+> the double down below belongs to you. They stack, and only one of them can
+> ever cost you anything.
 
 ### 💥 Double down
 
@@ -113,10 +118,14 @@ Three per tournament, per server. Declare one with the button on the private
 confirmation that follows your pick, any time before kick-off — it's
 reclaimable right up until the match starts, and locked after.
 
-|            | you called it | you didn't |
-|------------|---------------|------------|
-| normal     | +10 to +30    | 0          |
-| doubled    | +20 to +60    | **−10**    |
+|                        | you called it | you didn't |
+|------------------------|---------------|------------|
+| group stage            | +10 to +30    | 0          |
+| group stage, doubled   | +20 to +60    | **−10**    |
+| grand final            | +20 to +60    | 0          |
+| grand final, doubled   | +40 to +120   | **−10**    |
+
+The stage bonus and the token multiply together; the penalty never does.
 
 **This is the only way to lose points.** That's deliberate: without a downside
 spending a token was free upside and the only question was timing. With one,

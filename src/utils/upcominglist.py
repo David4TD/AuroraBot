@@ -56,12 +56,17 @@ def _stage_of(match: dict) -> str:
 
 
 def _weight_tag(match: dict) -> str:
-    """Flag the matches that pay more, since that's now worth planning around."""
+    """Flag the matches that pay more, since that's worth planning around.
+
+    Says *stage* explicitly. A bare "×2" is the same number a double down
+    pays, and the two are entirely different things — this one applies to
+    everybody automatically, costs nothing and risks nothing.
+    """
     weight = stage_weight(match)
     if weight >= FINAL_WEIGHT:
-        return "🏆 ×2"
+        return f"🏆 stage ×{FINAL_WEIGHT:g}"
     if weight >= PLAYOFF_WEIGHT:
-        return "×1.5"
+        return f"stage ×{PLAYOFF_WEIGHT:g}"
     return ""
 
 
@@ -157,7 +162,7 @@ def build_upcoming_list(
     if common:
         footer.append(" ".join(common))
     if any(_weight_tag(m) for m in shown):
-        footer.append("×2 finals, ×1.5 bracket")
+        footer.append("stage bonus is automatic, on top of a double down")
     footer.append("/predict to call one · /lineup for rosters")
     embed.set_footer(text=" · ".join(footer)[:2048])
     return embed

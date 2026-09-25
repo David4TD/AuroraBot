@@ -108,12 +108,13 @@ class Meta(commands.Cog):
             inline=False,
         )
         embed.add_field(
-            name="🏆 Stage",
+            name="🏆 Stage — automatic, nothing to spend",
             value=(
                 f"Grand final **×{FINAL_WEIGHT:g}** · rest of the bracket "
                 f"**×{PLAYOFF_WEIGHT:g}** · group stage face value.\n"
-                f"Late matches pay more, so an event stays winnable if you "
-                f"joined halfway through."
+                f"Everyone gets this, it costs nothing and risks nothing. "
+                f"Late matches paying more is what keeps an event winnable if "
+                f"you joined halfway through."
             ),
             inline=False,
         )
@@ -126,8 +127,23 @@ class Meta(commands.Cog):
                 f"✅ it lands → **×{DOUBLE_DOWN}**\n"
                 f"❌ it doesn't → **−{DOUBLE_DOWN_PENALTY}**\n"
                 f"Capped at what you've banked this event, so your board can "
-                f"dip but never go below zero. The stage multiplies the reward, "
-                f"not the risk. Spent is spent — they come back next event."
+                f"dip but never go below zero. Spent is spent — they come "
+                f"back next event."
+            ),
+            inline=False,
+        )
+        final_doubled = payout_for(
+            1, 5, doubled=True, weight=FINAL_WEIGHT
+        ).points
+        embed.add_field(
+            name="❓ The two ×2s are different things",
+            value=(
+                f"The stage bonus is the event's; the double down is yours. "
+                f"They **stack**, and only one of them can cost you.\n"
+                f"A 1-in-5 call on a grand final: **{payout_for(1, 5, weight=FINAL_WEIGHT).points} pts**.\n"
+                f"The same call doubled down: **{final_doubled} pts** — "
+                f"or **−{DOUBLE_DOWN_PENALTY}** if it misses, never more.\n"
+                f"The stage multiplies the reward, never the risk."
             ),
             inline=False,
         )
