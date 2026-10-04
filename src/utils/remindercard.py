@@ -8,10 +8,13 @@ closed with an internal match id.
 
 A reminder is the only moment the bot asks for something rather than reporting:
 the buttons underneath it are the whole point, and they are live for about
-thirty minutes. So the card leads with the countdown, then what the match is
-worth — which is what decides whether it's worth a conviction token — and says
-nothing about how the server has voted. That stays hidden until kick-off; a
-tally printed while the book is open would anchor everyone who reads it.
+thirty minutes. Three lines is the whole card — who, when, and what it pays —
+because anyone reading it is deciding whether to tap a button, not studying a
+fixture.
+
+It says nothing about how the server has voted. That stays hidden until
+kick-off; a tally printed while the book is open would anchor everyone who
+reads it.
 """
 from __future__ import annotations
 
@@ -20,7 +23,10 @@ import discord
 from .embeds import AMBER
 from .matches import opponents
 from .regions import event_flag
-from .scoring import BASE_POINTS, FINAL_WEIGHT, MAX_MULTIPLIER, PLAYOFF_WEIGHT, stage_weight
+from .scoring import (
+    BASE_POINTS, DOUBLE_DOWN, DOUBLE_DOWN_PENALTY, FINAL_WEIGHT,
+    MAX_MULTIPLIER, PLAYOFF_WEIGHT, stage_weight,
+)
 from .tournaments import parse_dt
 
 
@@ -33,17 +39,16 @@ def _stream(match: dict) -> str | None:
 
 
 def worth_line(match: dict) -> str:
-    """What a correct call on this match pays, before the room is counted."""
+    """What a correct call pays here, in as few characters as it takes.
+
+    The stage multiplier is already on the line above, so this doesn't explain
+    it again — it just shows the number it produces.
+    """
     weight = stage_weight(match)
     low = int(BASE_POINTS * weight)
     high = int(BASE_POINTS * MAX_MULTIPLIER * weight)
-    if weight >= FINAL_WEIGHT:
-        stage = f" — the final, so everything here counts **×{FINAL_WEIGHT:g}**"
-    elif weight >= PLAYOFF_WEIGHT:
-        stage = f" — bracket match, counts **×{PLAYOFF_WEIGHT:g}**"
-    else:
-        stage = ""
-    return f"**{low}** for calling it, up to **{high}** against the room{stage}."
+    return (f"🎲 **{low}–{high}** pts · 💥 double down **×{DOUBLE_DOWN}** "
+            f"or **−{DOUBLE_DOWN_PENALTY}**")
 
 
 def build_reminder_card(
@@ -76,8 +81,9 @@ def build_reminder_card(
     begin = parse_dt(match.get("begin_at"))
     detail = []
     if begin:
-        ts = int(begin.timestamp())
-        detail.append(f"🕒 <t:{ts}:R> · <t:{ts}:t>")
+        # The countdown alone: a reminder is thirty minutes wide, so the wall
+        # clock beside it was answering a question nobody had.
+        detail.append(f"🕒 <t:{int(begin.timestamp())}:R>")
     best_of = match.get("number_of_games")
     if best_of and int(best_of) > 1:
         detail.append(f"Bo{best_of}")
@@ -86,28 +92,14 @@ def build_reminder_card(
         detail.append(f"🏆 stage ×{FINAL_WEIGHT:g}")
     elif weight >= PLAYOFF_WEIGHT:
         detail.append(f"stage ×{PLAYOFF_WEIGHT:g}")
-    if detail:
-        lines.append(" · ".join(detail))
-
     stream = _stream(match)
     if stream:
-        lines.append(f"▶ [Watch]({stream})")
+        detail.append(f"▶ [Watch]({stream})")
+    if detail:
+        lines.append(" · ".join(detail))
+    if predictable:
+        lines.append(worth_line(match))
     embed.description = "\n".join(lines)
 
-    if predictable:
-        embed.add_field(
-            name="🎲 Call it",
-            value=(
-                f"{worth_line(match)}\n"
-                f"💥 A double down pays twice that, or costs "
-                f"**{BASE_POINTS}** if you're wrong — `/scoring`."
-            )[:1024],
-            inline=False,
-        )
-
-    if game_key:
-        from .games import label_for
-        embed.set_footer(text=f"{label_for(game_key)} · predictions close at kick-off")
-    else:
-        embed.set_footer(text="Predictions close at kick-off")
+    embed.set_footer(text="Predictions close at kick-off · /scoring")
     return embed
