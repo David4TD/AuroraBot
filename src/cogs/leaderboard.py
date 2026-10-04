@@ -18,6 +18,14 @@ from ..utils.embeds import BRAND
 TOP_N = 10
 RECENT_TITLES = 5
 
+# How long to let the tournament directory warm before giving up on knowing
+# which of a channel's events is still running. A cached list — even a stale
+# one — comes back instantly, so this only ever costs anything on a cold start.
+DIRECTORY_WAIT = 0.5
+
+# How current an event is, as far as choosing a default board goes.
+ENDED, UNKNOWN, RUNNING = 0, 1, 2
+
 
 class Leaderboard(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
@@ -26,15 +34,19 @@ class Leaderboard(commands.Cog):
     async def _board_ac(self, interaction: discord.Interaction, current: str):
         """Tournaments this server has actually predicted on, plus All-time."""
         rows = await self.bot.db.tournaments_with_predictions(interaction.guild_id)
+        crowned = await self.bot.db.crowned_tournaments(interaction.guild_id)
         query = (current or "").lower()
         choices = [app_commands.Choice(name="🏆 Season table (every tournament)", value="all")]
         for r in rows:
             name = r["tournament_name"] or f"Tournament {r['tournament_id']}"
             if query and query not in name.lower():
                 continue
+            # A crowned event is a closed book: worth saying so in the picker,
+            # since a finished board and a live one otherwise look identical.
+            done = " · 🏁 done" if int(r["tournament_id"]) in crowned else ""
             choices.append(
                 app_commands.Choice(
-                    name=f"{name} · {r['picks']} picks"[:100],
+                    name=f"{name} · {r['picks']} picks{done}"[:100],
                     value=str(int(r["tournament_id"])),
                 )
             )
@@ -124,7 +136,8 @@ class Leaderboard(commands.Cog):
 
         With nothing specified, the channel's own alert subscription decides —
         so `/leaderboard` in #lck shows LCK without anyone naming it. Falls back
-        to the server's all-time board when the channel follows nothing.
+        to the server's season table when the channel follows nothing, or when
+        everything it follows has already finished.
         """
         if tournament == "all":
             return None, "Season table"
@@ -152,10 +165,75 @@ class Leaderboard(commands.Cog):
             if int(s["channel_id"]) == interaction.channel_id
             and s["tournament_id"] is not None
         ]
-        if subs:
-            target = int(subs[0]["tournament_id"])
-            return target, subs[0]["tournament_name"] or "Tournament"
+        sub = await self._channel_board(interaction.guild_id, subs)
+        if sub is not None:
+            return int(sub["tournament_id"]), sub["tournament_name"] or "Tournament"
         return None, "Season table"
+
+    async def _channel_board(self, guild_id: int, subs: list) -> object | None:
+        """Which of a channel's events to open on, or None for the season table.
+
+        A channel usually follows more than one, and the subscription list comes
+        back sorted by name — so taking the first one meant the board opened on
+        whichever event was alphabetically first, long after it had finished.
+
+        What makes an event the right default is that it's *on*: still in the
+        tournament directory (which drops anything two days past its end), not
+        yet crowned, and with picks waiting on a result. Only once all of that
+        ties does recency break it. If nothing the channel follows is still
+        running, no single event is the obvious answer and the season table is
+        the honest one.
+        """
+        if not subs:
+            return None
+        ids = [int(s["tournament_id"]) for s in subs]
+        activity = await self.bot.db.tournament_activity(guild_id, ids)
+        crowned = await self.bot.db.crowned_tournaments(guild_id)
+
+        running: dict[str, set[int] | None] = {}
+        ranked = []
+        for sub in subs:
+            game = sub["game"]
+            if game not in running:
+                running[game] = await self._running_ids(game)
+            tid = int(sub["tournament_id"])
+            known = running[game]
+            if known is None:
+                state = UNKNOWN          # directory cold; don't call it dead
+            else:
+                state = RUNNING if tid in known else ENDED
+            seen = activity.get(tid) or {}
+            ranked.append((
+                state,
+                0 if tid in crowned else 1,
+                1 if seen.get("open_picks") else 0,
+                seen.get("last_seen") or "",
+                seen.get("picks", 0),
+                sub,
+            ))
+
+        ranked.sort(key=lambda row: row[:5], reverse=True)
+        best = ranked[0]
+        return None if best[0] == ENDED else best[5]
+
+    async def _running_ids(self, game: str | None) -> set[int] | None:
+        """Tournament ids currently on for a game, or None if we can't tell.
+
+        None and an empty set mean different things here: "ask again later"
+        versus "nothing is on". Only the first should leave a stale board as
+        the default, so an empty result is reported as None too — a channel
+        whose game has no current events gets the same treatment as a cold
+        cache rather than a surprise jump to the season table.
+        """
+        if not game:
+            return None
+        try:
+            rows = await self.bot.tourneys.current(game, wait=DIRECTORY_WAIT)
+        except Exception:  # noqa: BLE001 - a board beats no board
+            return None
+        if not rows:
+            return None
+        return {int(t["id"]) for t in rows if t.get("id")}
 
     async def _name_for(self, guild_id: int, tournament_id: int) -> str:
         rows = await self.bot.db.tournaments_with_predictions(guild_id, limit=100)

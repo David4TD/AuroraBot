@@ -1691,6 +1691,41 @@ class Database:
         )
         return {int(r["tournament_id"]) for r in await cur.fetchall()}
 
+    async def tournament_activity(
+        self, guild_id: int, tournament_ids
+    ) -> dict[int, dict]:
+        """When each of these events was last played here, and what's still open.
+
+        Lets a caller tell a channel's live event from one that wrapped up weeks
+        ago without asking the API about either. ``last_seen`` is the match's own
+        kick-off where we have it rather than when someone clicked, so an event
+        doesn't rank as recent because a straggler voted late.
+        """
+        ids = [int(t) for t in dict.fromkeys(tournament_ids) if t is not None]
+        if not ids:
+            return {}
+        marks = ",".join("?" * len(ids))
+        cur = await self.conn.execute(
+            f"""
+            SELECT tournament_id,
+                   COUNT(*) AS picks,
+                   SUM(status = 'open') AS open_picks,
+                   MAX(COALESCE(match_starts_at, created_at)) AS last_seen
+            FROM predictions
+            WHERE guild_id = ? AND tournament_id IN ({marks})
+            GROUP BY tournament_id
+            """,  # noqa: S608 - `marks` is only ever '?' placeholders
+            [str(guild_id), *ids],
+        )
+        return {
+            int(r["tournament_id"]): {
+                "picks": int(r["picks"] or 0),
+                "open_picks": int(r["open_picks"] or 0),
+                "last_seen": r["last_seen"] or "",
+            }
+            for r in await cur.fetchall()
+        }
+
     async def champion_counts(self, guild_id: int) -> dict[str, int]:
         """How many events each member has won here — the crown count."""
         cur = await self.conn.execute(
