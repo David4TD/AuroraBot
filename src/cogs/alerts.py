@@ -29,8 +29,9 @@ from discord.ext import commands, tasks
 
 from ..services.pandascore import PandaScoreError
 from ..utils.choices import GAME_CHOICES
-from ..utils.embeds import BRAND, GREEN, match_embed
+from ..utils.embeds import BRAND, GREEN
 from ..utils.livecard import build_live_card
+from ..utils.remindercard import build_reminder_card
 from ..utils.games import key_for_videogame, label_for, rank_by_name, resolve_slug
 from ..utils.guildgames import blocked_message
 from ..utils.guildprefs import alert_lead
@@ -782,7 +783,7 @@ class Alerts(commands.Cog):
             )
             content = f"⏰ **Starting in ~{lead} minutes!**"
             if predictable:
-                content += "\n🎲 Pick the winner below — only you see the result."
+                content += "\n🎲 Tap a team below — only you see the reply."
         else:
             content = "🔴 **A match just went live!**"
 
@@ -794,10 +795,12 @@ class Alerts(commands.Cog):
                     VoteButton(side, team["name"], self.bot.icons.partial(team))
                 )
 
-        # A reminder is still a fixture (nothing to score yet); once it's live
-        # it gets the same card /live shows, so the two never disagree.
+        # Each state gets the card built for it: a fixture about to start, or
+        # the same live card /live shows, so the two never disagree.
         if state == "reminder":
-            embed = match_embed(match, sub["game"], self.bot.icons)
+            embed = build_reminder_card(
+                self.bot, match, sub["game"], predictable=predictable
+            )
         else:
             embed = await build_live_card(self.bot, match, sub["game"])
         if state != "reminder" and len(teams) >= 2:
