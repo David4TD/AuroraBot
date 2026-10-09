@@ -24,8 +24,8 @@ from .embeds import AMBER
 from .matches import opponents
 from .regions import event_flag
 from .scoring import (
-    BASE_POINTS, DOUBLE_DOWN, DOUBLE_DOWN_PENALTY, FINAL_WEIGHT,
-    MAX_MULTIPLIER, PLAYOFF_WEIGHT, stage_weight,
+    BASE_POINTS, DOUBLE_DOWN, DOUBLE_DOWN_PENALTY, MAX_MULTIPLIER,
+    round_tag, stage_weight,
 )
 from .tournaments import parse_dt
 
@@ -87,11 +87,11 @@ def build_reminder_card(
     best_of = match.get("number_of_games")
     if best_of and int(best_of) > 1:
         detail.append(f"Bo{best_of}")
-    weight = stage_weight(match)
-    if weight >= FINAL_WEIGHT:
-        detail.append(f"🏆 stage ×{FINAL_WEIGHT:g}")
-    elif weight >= PLAYOFF_WEIGHT:
-        detail.append(f"stage ×{PLAYOFF_WEIGHT:g}")
+    # Which round this is, named — "Lower bracket final" rather than a bare
+    # "×1.5" that could be any of half a dozen matches in the same bracket.
+    tag = round_tag(match, always=True)
+    if tag:
+        detail.append(tag)
     stream = _stream(match)
     if stream:
         detail.append(f"▶ [Watch]({stream})")

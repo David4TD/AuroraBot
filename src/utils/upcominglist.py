@@ -28,7 +28,7 @@ import discord
 from .embeds import BRAND
 from .matches import opponents
 from .regions import event_flag
-from .scoring import FINAL_WEIGHT, PLAYOFF_WEIGHT, stage_weight
+from .scoring import round_tag
 from .tournaments import parse_dt
 
 # One line each now, so more of them fit before a field hits its 1024-character
@@ -56,18 +56,18 @@ def _stage_of(match: dict) -> str:
 
 
 def _weight_tag(match: dict) -> str:
-    """Flag the matches that pay more, since that's worth planning around.
+    """Flag the matches that pay more, and say which round they are.
 
-    Says *stage* explicitly. A bare "×2" is the same number a double down
-    pays, and the two are entirely different things — this one applies to
-    everybody automatically, costs nothing and risks nothing.
+    The multiplier is never bare. A "×2" on its own is the same number a
+    double down pays, and the two are entirely different things — this one
+    applies to everybody automatically, costs nothing and risks nothing. The
+    round's name carries it: "Lower bracket final ×1.5" can't be read as a
+    token, and it also tells you which of the bracket's matches this is.
+
+    Face-value rounds stay untagged here. On a list twelve rows deep, a
+    "Round 4" that changes no points would be a word on every line.
     """
-    weight = stage_weight(match)
-    if weight >= FINAL_WEIGHT:
-        return f"🏆 stage ×{FINAL_WEIGHT:g}"
-    if weight >= PLAYOFF_WEIGHT:
-        return f"stage ×{PLAYOFF_WEIGHT:g}"
-    return ""
+    return round_tag(match)
 
 
 def _line(match: dict, icons, show_league: bool, show_stage: bool) -> str:

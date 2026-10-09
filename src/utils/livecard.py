@@ -21,7 +21,7 @@ import discord
 from .embeds import GREEN
 from .matches import opponents
 from .regions import event_flag
-from .scoring import payout_for
+from .scoring import payout_for, round_tag
 from .tournaments import parse_dt
 
 log = logging.getLogger("aurorabot.livecard")
@@ -112,7 +112,14 @@ async def build_live_card(
     right = f"**{b['name']}** {icon_b}".strip()
     lines = [f"{left}  **{left_score} — {right_score}**  {right}"]
 
-    status = " · ".join(x for x in (map_progress(match), _live_for(match)) if x)
+    # The round leads the status line: on a live card the first question is
+    # what this match is worth losing, and "Lower bracket final" answers it in
+    # a way the stage name in the title can't.
+    status = " · ".join(
+        x for x in (round_tag(match, always=True), map_progress(match),
+                    _live_for(match))
+        if x
+    )
     if status:
         lines.append(status)
     stream = _stream(match)

@@ -79,6 +79,50 @@ _KNOCKOUT = re.compile(
     r"|decider|top ?8|top ?4)\b"
 )
 
+# ── naming the round ─────────────────────────────────────────────────────────
+# "×1.5" tells you a match counts for more; it doesn't tell you a lower bracket
+# elimination game from a quarterfinal. These turn PandaScore's own wording
+# into the round's name, so a card can say which match this actually is.
+#
+# Every spelling below was taken from a sweep of the live feeds across the
+# games the bot follows, which is messier than the docs suggest: the same event
+# runs "Lower Bracket Final" and "Lower bracket final", "Upper Bracket
+# Quarterfinal  3" with two spaces, "Round of 16 Match 8" and "Round of 16
+# match 8", and trailing whitespace on a few. So every pattern is
+# case-insensitive and tolerant about the spaces between words.
+
+# Which half of a double-elimination bracket. "Winners' Match" is deliberately
+# absent: that's a GSL group's unbeaten match, not an upper bracket at all, and
+# calling it one would misdescribe a group-stage game as a playoff.
+_BRACKET_SIDE = (
+    (re.compile(r"\b(?:upper|winners?)[\s-]*bracket\b", re.I), "Upper bracket"),
+    (re.compile(r"\b(?:lower|losers?)[\s-]*bracket\b", re.I), "Lower bracket"),
+)
+
+# The round itself, most specific first — the first match wins. A bare "final"
+# sits below the qualified ones, and the word-boundary is what stops it firing
+# inside "semifinal". Combined with a bracket side above, "Final" becomes
+# "Lower bracket final" without needing a pattern of its own.
+_ROUNDS = (
+    (re.compile(r"\bgrand[\s-]*finals?\b", re.I), "Grand final"),
+    (re.compile(r"\bsemi[\s-]*finals?\b", re.I), "Semifinal"),
+    (re.compile(r"\bquarter[\s-]*finals?\b", re.I), "Quarterfinal"),
+    (re.compile(r"\bfinals?\b", re.I), "Final"),
+    (re.compile(r"\bround\s+of\s+(\d+)\b", re.I), "Round of {}"),
+    (re.compile(r"\bro(\d{2})\b", re.I), "Round of {}"),
+    # "Lower Bracket Round 3 Match 2" — the round is the bracket depth, and the
+    # match number within it is just which of the parallel games it is.
+    (re.compile(r"\bround\s+(\d+)\b", re.I), "Round {}"),
+    (re.compile(r"\b(\d+(?:st|nd|rd|th))[\s-]+place[\s-]+decider\b", re.I),
+     "{} place decider"),
+    (re.compile(r"\bdeciders?\b", re.I), "Decider"),
+    (re.compile(r"\belimination\b", re.I), "Elimination match"),
+    (re.compile(r"\bwinners?'?[\s-]*match\b", re.I), "Winners' match"),
+)
+
+# A name that is only ever two teams, with no round in front of it.
+_MATCHUP = re.compile(r"\bvs\.?\b", re.I)
+
 # ── perfect day ──────────────────────────────────────────────────────────────
 # Two clean calls' worth. Big enough to chase, small enough that it can't
 # outweigh actually reading the room well over a tournament.
@@ -125,6 +169,71 @@ def stage_weight(match: dict) -> float:
     if _KNOCKOUT.search(both) or _NOT_THE_FINAL.search(both):
         return PLAYOFF_WEIGHT
     return 1.0
+
+
+def stage_label(match: dict) -> str | None:
+    """Which round this match is — "Lower bracket final", "Quarterfinal".
+
+    ``None`` when nothing in the match names a round, which is the usual case
+    for a group game called plainly "T1 vs GEN". Callers should fall back to
+    whatever they said before rather than inventing a round.
+
+    The match's own name is read first and the stage only as a backstop: a
+    Swiss "Round 4" inside a stage called Playoffs is a round 4, and reading
+    them the other way round would relabel every match in the stage.
+    """
+    for source in (match.get("name"), (match.get("tournament") or {}).get("name")):
+        label = _label_from(source)
+        if label:
+            return label
+    return None
+
+
+def round_tag(match: dict, *, always: bool = False) -> str:
+    """The round and what it pays, as one tag: ``Lower bracket final ×1.5``.
+
+    Naming the round is what makes the multiplier legible — "×1.5" on its own
+    could be any of five different matches in the same bracket, and a reader
+    had no way to tell a lower-bracket elimination game from a quarterfinal.
+
+    A round that pays face value carries no multiplier, and only appears with
+    *always*: on a one-match card there's room to say "Round 4", but in a list
+    of twelve it would be a word on every row that changes nothing.
+
+    Empty string when there's nothing worth saying, so callers can drop it.
+    """
+    label = stage_label(match)
+    weight = stage_weight(match)
+    if weight >= FINAL_WEIGHT:
+        return f"🏆 {label or 'Final'} ×{FINAL_WEIGHT:g}"
+    if weight >= PLAYOFF_WEIGHT:
+        # No label means the stage said "Playoffs" but the match didn't say
+        # which round — the old wording is still the honest one there.
+        return f"{label} ×{PLAYOFF_WEIGHT:g}" if label else f"stage ×{PLAYOFF_WEIGHT:g}"
+    return label if (always and label) else ""
+
+
+def _label_from(text: str | None) -> str | None:
+    if not text:
+        return None
+    head = str(text)
+    if ":" in head:
+        # "Semifinal 1: T1 vs GEN" — the round is the part before the colon.
+        head = head.split(":")[0]
+    elif _MATCHUP.search(head):
+        # A bare "Final Boss vs NAVI" names no round, and reading the team
+        # names for one would call that match the final.
+        return None
+
+    side = next((name for pattern, name in _BRACKET_SIDE if pattern.search(head)), "")
+    for pattern, template in _ROUNDS:
+        found = pattern.search(head)
+        if not found:
+            continue
+        core = template.format(*found.groups()) if found.groups() else template
+        return f"{side} {core.lower()}" if side else core
+    # A side with no round — a stage simply called "Lower bracket".
+    return side or None
 
 
 @dataclass(frozen=True)

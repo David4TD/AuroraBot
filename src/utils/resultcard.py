@@ -22,6 +22,7 @@ import discord
 from .embeds import BRAND
 from .matches import opponents
 from .regions import event_flag
+from .scoring import stage_label
 from .tournaments import parse_dt
 
 log = logging.getLogger("aurorabot.resultcard")
@@ -105,7 +106,11 @@ async def build_result_card(bot, match: dict, game_key: str, guild_id=None
     league = (match.get("league") or {}).get("name") or ""
     serie = (match.get("serie") or {}).get("full_name") or ""
     stage = (match.get("tournament") or {}).get("name") or ""
-    context = " · ".join(x for x in (league, serie, stage) if x)
+    # The round, where the match names one — a result read back a week later
+    # should say it was the lower bracket final, not just "Playoffs".
+    context = " · ".join(
+        x for x in (league, serie, stage, stage_label(match)) if x
+    )
 
     header = [f"{flag + ' ' if flag else ''}{context}".strip()]
     ended = parse_dt(match.get("end_at")) or parse_dt(match.get("begin_at"))

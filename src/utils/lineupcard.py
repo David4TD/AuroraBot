@@ -24,6 +24,7 @@ from ..services.tourneys import ROLE_LABEL, ROLE_ORDER
 from .embeds import BRAND
 from .matches import opponents
 from .regions import event_flag, flag_for_country
+from .scoring import round_tag
 from .tournaments import parse_dt
 
 # A five-player squad plus a couple of extras. Embed fields cap at 1024
@@ -100,6 +101,11 @@ async def build_card(bot, match: dict, game_key: str) -> discord.Embed:
     bo = match.get("number_of_games")
     if bo:
         header.append(f"🎯 Best of {bo}")
+    # The daily digest posts one of these per match, and it's where most picks
+    # are made — so it says which round it is and what that round pays.
+    tag = round_tag(match, always=True)
+    if tag:
+        header.append(tag)
     patch = (match.get("videogame_version") or {}).get("name")
     if patch:
         header.append(f"🔧 Patch {patch}")
