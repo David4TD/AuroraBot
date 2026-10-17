@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import discord
 from discord import app_commands
@@ -53,7 +53,6 @@ log = logging.getLogger("aurorabot.cogs.alerts")
 # so the autocomplete is always served warm.
 WARM_EVERY_MINUTES = 10
 
-FETCH_SIZE = 50
 PRUNE_AFTER_DAYS = 3
 
 # Value prefixes and the autocomplete deadline now live with the shared
@@ -637,17 +636,22 @@ class Alerts(commands.Cog):
             + [self.bot.settings.alert_lead_minutes]
         )
         now = datetime.now(timezone.utc)
+        # Only matches up to the widest reminder window can be due, so that is
+        # how far into the feed there is any point reading.
+        horizon = now + timedelta(minutes=widest)
 
         # Fetch each subscribed game once, not once per subscription.
         feeds: dict[str, tuple[list[dict], list[dict]]] = {}
         for game_key in {s["game"] for s in subs}:
             slug = self._slug(game_key)
             try:
-                running = self._top_tier(
-                    await self.bot.api.running_matches(slug=slug, per_page=FETCH_SIZE)
-                )
+                # Read to the end of the window rather than to the end of a
+                # page: the feeds carry every tier, and a game that runs a lot
+                # of lower-tier matches can push its Tier 1 ones off page one
+                # entirely. Those matches used to get no reminder at all.
+                running = self._top_tier(await self.bot.api.running_all(slug))
                 upcoming = self._top_tier(
-                    await self.bot.api.upcoming_matches(slug=slug, per_page=FETCH_SIZE)
+                    await self.bot.api.upcoming_until(slug, horizon)
                 )
             except PandaScoreError as exc:
                 log.warning("poll: could not fetch %s: %s", game_key, exc)

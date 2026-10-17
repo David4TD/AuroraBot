@@ -14,9 +14,19 @@ from typing import Any
 
 import aiohttp
 
+from ..utils.tournaments import parse_dt
+
 log = logging.getLogger("aurorabot.pandascore")
 
 BASE_URL = "https://api.pandascore.co"
+
+# PandaScore's maximum. Worth asking for in full: there is no server-side tier
+# filter on the match feeds, so a page is mostly matches the bot will never
+# show, and the page size decides how much of the real slate it can even see.
+PAGE_SIZE = 100
+# A ceiling on a single read, so a game with a pathological feed costs a
+# bounded number of requests rather than walking the whole calendar.
+MAX_PAGES = 5
 
 
 class PandaScoreError(Exception):
@@ -77,17 +87,71 @@ class PandaScoreClient:
     # endpoints — tier lives on the embedded tournament/serie/league objects.
     # Callers over-fetch here and filter with ``utils.tiers`` afterwards, so
     # these default to a generous page size.
-    async def running_matches(self, slug: str | None = None, per_page: int = 50) -> list[dict]:
+    async def running_matches(
+        self, slug: str | None = None, per_page: int = 50, page: int = 1
+    ) -> list[dict]:
         path = f"/{slug}/matches/running" if slug else "/matches/running"
-        data = await self._get(path, {"per_page": per_page})
+        data = await self._get(path, {"per_page": per_page, "page": page})
         return data if isinstance(data, list) else []
 
-    async def upcoming_matches(self, slug: str | None = None, per_page: int = 50) -> list[dict]:
+    async def upcoming_matches(
+        self, slug: str | None = None, per_page: int = 50, page: int = 1
+    ) -> list[dict]:
         path = f"/{slug}/matches/upcoming" if slug else "/matches/upcoming"
         data = await self._get(
-            path, {"per_page": per_page, "sort": "begin_at"}
+            path, {"per_page": per_page, "sort": "begin_at", "page": page}
         )
         return data if isinstance(data, list) else []
+
+    async def upcoming_until(
+        self, slug: str | None, horizon, *,
+        per_page: int = PAGE_SIZE, max_pages: int = MAX_PAGES,
+    ) -> list[dict]:
+        """Every upcoming match starting at or before *horizon*, however deep.
+
+        One page of a tier-mixed feed is not the same thing as one page of the
+        matches the bot shows. Counter-Strike runs enough lower-tier fixtures
+        that the first Tier 1 one sat at index 24 when this was written, so a
+        50-row page left half the Tier 1 CS slate invisible to the poll — those
+        matches got no reminder and appeared on no digest.
+
+        The feed is ordered by kick-off, so reading on until it passes
+        *horizon* cannot miss one. In practice that is a single request: 100
+        rows reached more than two days ahead for every game measured. The page
+        cap only matters if that ever stops being true.
+        """
+        out: list[dict] = []
+        for page in range(1, max_pages + 1):
+            chunk = await self.upcoming_matches(
+                slug=slug, per_page=per_page, page=page
+            )
+            out.extend(chunk)
+            if len(chunk) < per_page:
+                break                   # the end of the feed
+            last = parse_dt(chunk[-1].get("begin_at"))
+            if last is None or last > horizon:
+                break                   # the feed has run past the window
+        return out
+
+    async def running_all(
+        self, slug: str | None, *,
+        per_page: int = PAGE_SIZE, max_pages: int = MAX_PAGES,
+    ) -> list[dict]:
+        """Every running match, rather than whichever page one happened on.
+
+        No kick-off order to stop on here, so this reads until a short page.
+        Only as many matches are ever live at once as are being played, so one
+        request covers it in practice.
+        """
+        out: list[dict] = []
+        for page in range(1, max_pages + 1):
+            chunk = await self.running_matches(
+                slug=slug, per_page=per_page, page=page
+            )
+            out.extend(chunk)
+            if len(chunk) < per_page:
+                break
+        return out
 
     async def past_matches(self, slug: str | None = None, per_page: int = 50) -> list[dict]:
         path = f"/{slug}/matches/past" if slug else "/matches/past"

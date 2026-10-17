@@ -12,6 +12,7 @@ points to correct predictors.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 
 import discord
 from discord import app_commands
@@ -34,7 +35,9 @@ from ..utils.tiers import filter_for
 
 log = logging.getLogger("aurorabot.cogs.predictions")
 
-FETCH_SIZE = 50
+# How far ahead /predict offers matches. A pick is worth making days out, and
+# the horizon is what decides how deep into a tier-mixed feed the read goes.
+LOOKAHEAD = timedelta(days=7)
 
 
 class TeamButton(discord.ui.Button):
@@ -190,7 +193,14 @@ class Predictions(commands.Cog):
 
         slug = resolve_slug(game_key, self.bot.settings.cs_slug)
         try:
-            matches = await self.bot.api.upcoming_matches(slug=slug, per_page=FETCH_SIZE)
+            # Deep enough to cover the week people actually predict over. The
+            # feeds carry every tier with no server-side filter, so one page of
+            # a busy game is mostly matches the bot never shows — on
+            # Counter-Strike that was enough to hide the Tier 1 fixtures from
+            # this picker entirely.
+            matches = await self.bot.api.upcoming_until(
+                slug, datetime.now(timezone.utc) + LOOKAHEAD
+            )
         except PandaScoreError:
             await interaction.followup.send("Predictions are unavailable right now.", ephemeral=True)
             return

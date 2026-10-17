@@ -61,7 +61,6 @@ from ..utils.tournaments import parse_dt
 log = logging.getLogger("aurorabot.cogs.digest")
 
 SWEEP_MINUTES = 5
-FETCH_SIZE = 50
 # Pending bracket slots re-checked per sweep. One request each, so this bounds
 # the cost of a busy playoff day rather than firing a burst of lookups.
 PENDING_PER_SWEEP = 20
@@ -528,12 +527,17 @@ class Digest(commands.Cog):
         """
         tz = tz or self.bot.settings.digest_tz
         slug = resolve_slug(sub["game"], self.bot.settings.cs_slug)
+        # Read as deep as this card reaches. The feeds carry every tier with no
+        # server-side filter, so one page is mostly matches the bot will never
+        # show — enough of them, on a game like Counter-Strike, to push the
+        # Tier 1 fixtures off it and off this schedule altogether.
+        _, horizon = digest_window(today, tz, hour)
         try:
-            feed = await self.bot.api.upcoming_matches(slug=slug, per_page=FETCH_SIZE)
-            feed += await self.bot.api.running_matches(slug=slug, per_page=FETCH_SIZE)
+            feed = await self.bot.api.upcoming_until(slug, horizon)
+            feed += await self.bot.api.running_all(slug)
         except PandaScoreError as exc:
             log.warning("digest: could not fetch %s: %s", sub["game"], exc)
-            return []
+            return [], []
 
         by_league = (sub["scope"] or "game") == "league"
         wanted = int(sub["league_id"] if by_league else sub["tournament_id"])
