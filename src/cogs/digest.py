@@ -62,6 +62,9 @@ log = logging.getLogger("aurorabot.cogs.digest")
 
 SWEEP_MINUTES = 5
 FETCH_SIZE = 50
+# Pending bracket slots re-checked per sweep. One request each, so this bounds
+# the cost of a busy playoff day rather than firing a burst of lookups.
+PENDING_PER_SWEEP = 20
 # A view holds 5 action rows; one match per row (two team buttons) is what makes
 # the pairing readable, so a message carries 5 matches and the rest spill over.
 MATCHES_PER_MESSAGE = 5
@@ -265,7 +268,104 @@ class Digest(commands.Cog):
                 continue          # that server's post isn't due yet
             await self._post_digest(sub, local_today(tz))
 
+        await self._fill_brackets()
         await self.bot.db.prune_digests(days=PRUNE_AFTER_DAYS)
+
+    async def _fill_brackets(self) -> None:
+        """Post the fixtures whose bracket slot was still TBD at digest time.
+
+        A digest goes out up to a day and a half before the matches it covers,
+        and a knockout fixture reads "VIT vs TBD" until its feeder match is
+        played. Those were dropped and never reconsidered, so the matches with
+        the most riding on them — a lower bracket final, a grand final — were
+        the ones certain not to get a prediction sheet.
+
+        One lookup per pending fixture per sweep, bounded, and only while one
+        exists: a server with nothing pending costs no API call at all.
+        """
+        try:
+            pending = await self.bot.db.pending_digest_matches(limit=PENDING_PER_SWEEP)
+        except Exception:  # noqa: BLE001 - never take the sweep down
+            log.exception("could not read pending digest fixtures")
+            return
+
+        for row in pending:
+            try:
+                await self._fill_one(row)
+            except PandaScoreError as exc:
+                log.debug("pending match %s lookup failed: %s", row["match_id"], exc)
+            except Exception:  # noqa: BLE001 - one bad row must not stop the rest
+                log.exception("could not resolve pending match %s", row["match_id"])
+
+    async def _fill_one(self, row) -> None:
+        digest_id, match_id = int(row["digest_id"]), int(row["match_id"])
+        match = await self.bot.api.get_match(match_id)
+
+        begin = parse_dt(match.get("begin_at"))
+        now = datetime.now(timezone.utc)
+        if begin is not None and begin <= now:
+            # Predictions close at kick-off, so a card now would carry dead
+            # buttons. Give up on this one rather than re-asking every sweep.
+            log.info("pending match %s started before its bracket filled", match_id)
+            await self.bot.db.clear_digest_pending(digest_id, match_id)
+            return
+
+        teams = _teams_of(match)
+        if teams is None:
+            return            # still waiting on the feeder result
+
+        channel = self.bot.get_channel(int(row["channel_id"]))
+        if channel is None:
+            log.warning("pending digest: channel %s is not visible", row["channel_id"])
+            return
+
+        sub = await self.bot.db.subscription(int(row["subscription_id"]))
+        if sub is None:
+            # The channel unsubscribed between the digest and the bracket
+            # filling. Don't post into a channel that stopped asking.
+            await self.bot.db.clear_digest_pending(digest_id, match_id)
+            return
+        votes = wants_votes(sub)
+        # Carries on the first message's numbering rather than restarting at 1.
+        start = await self.bot.db.digest_match_count(digest_id)
+
+        await self.bot.db.add_digest_matches(digest_id, [{
+            "match_id": match_id,
+            "begin_at": match.get("begin_at"),
+            "team_a": (teams[0]["id"], teams[0]["name"]),
+            "team_b": (teams[1]["id"], teams[1]["name"]),
+            "tournament_id": match_tournament_id(match),
+            "tournament_name": (match.get("tournament") or {}).get("name"),
+        }])
+
+        header = discord.Embed(
+            title=f"🔓 Now confirmed · {_target_name(sub) or ''}".strip(" ·")[:256],
+            description=(
+                f"{teams[0]['name']} vs {teams[1]['name']} — the slot on "
+                f"today's schedule that was still being decided."
+            ),
+            color=BRAND,
+        )
+        card = await build_card(self.bot, match, row["game"])
+        card.title = f"{start + 1}. {card.title}"[:256]
+        chunk = [(match, teams)]
+        try:
+            await channel.send(
+                embeds=[header, card],
+                view=self._vote_view(digest_id, chunk, start) if votes else None,
+            )
+        except discord.Forbidden:
+            log.warning("pending digest: cannot post in %s", row["channel_id"])
+            return
+        except discord.HTTPException as exc:
+            log.warning("pending digest: failed to post in %s: %s",
+                        row["channel_id"], exc)
+            return
+
+        # Cleared only after the card is out, so a failed post is retried.
+        await self.bot.db.clear_digest_pending(digest_id, match_id)
+        log.info("Posted late bracket fixture %s to channel %s (digest %s)",
+                 match_id, row["channel_id"], digest_id)
 
     async def _post_digest(self, sub, today, *, force: bool = False) -> bool:
         """Post one subscription's schedule for *today*. True if a message went out."""
@@ -307,11 +407,19 @@ class Digest(commands.Cog):
             if digest_id is None:
                 return False
 
-        matches = await self._todays_matches(sub, today, tz, hour, force=force)
+        matches, deferred = await self._todays_matches(
+            sub, today, tz, hour, force=force
+        )
+        # Recorded before anything is posted: a fixture this card owns but
+        # can't list yet has to survive even if the post itself fails, or the
+        # only chance to pick it up is lost with the message.
+        await self.bot.db.add_digest_pending(digest_id, deferred)
         if not matches:
             # The claim row stays, recording "nothing on today", so the sweep
-            # stops re-querying the API for the rest of the day.
-            log.debug("digest %s: nothing scheduled for %s", digest_id, date_key)
+            # stops re-querying the API for the rest of the day. Anything
+            # deferred is still noted above and posted when the bracket fills.
+            log.debug("digest %s: nothing listable for %s (%d awaiting a bracket)",
+                      digest_id, date_key, len(deferred))
             return False
 
         channel = self.bot.get_channel(channel_id)
@@ -346,6 +454,7 @@ class Digest(commands.Cog):
             header = self._build_header(
                 sub, today, chunk,
                 total=len(matches), part=part, parts=len(chunks),
+                pending=len(deferred),
                 # The same zone the day's window was measured in, so "after
                 # midnight" on the banner means what it meant during selection.
                 tz=tz,
@@ -409,8 +518,14 @@ class Digest(commands.Cog):
 
     async def _todays_matches(
         self, sub, today, tz=None, hour: int = 0, *, force: bool = False
-    ) -> list[tuple[dict, tuple[dict, dict]]]:
-        """Tier-1 matches this digest owns: today, up to the next post."""
+    ) -> tuple[list[tuple[dict, tuple[dict, dict]]], list[dict]]:
+        """Tier-1 matches this digest owns: today, up to the next post.
+
+        Returns ``(ready, deferred)`` — the fixtures that can be listed now,
+        and the ones this digest owns but whose bracket slot is still TBD. The
+        second list is the whole reason a knockout match no longer vanishes:
+        it used to be dropped here and never looked at again.
+        """
         tz = tz or self.bot.settings.digest_tz
         slug = resolve_slug(sub["game"], self.bot.settings.cs_slug)
         try:
@@ -426,6 +541,7 @@ class Digest(commands.Cog):
         # nothing needs to be: each digest owns a window that ends where the
         # next one begins, so a match belongs to exactly one of them.
         out: list[tuple[dict, tuple[dict, dict]]] = []
+        deferred: list[dict] = []
         seen: set[int] = set()
         for match in filter_for(self.bot.settings, feed):
             mid = int(match.get("id", 0))
@@ -446,12 +562,18 @@ class Digest(commands.Cog):
                 continue
             teams = _teams_of(match)
             if teams is None:
-                continue          # unconfirmed bracket slot: nothing to vote on
+                # An unconfirmed bracket slot — there is nothing to vote on
+                # *yet*. Noted rather than dropped: the feeder match may not be
+                # played until long after this card goes out, and the sweep
+                # posts a follow-up once it is.
+                seen.add(mid)
+                deferred.append({"match_id": mid, "begin_at": match.get("begin_at")})
+                continue
             seen.add(mid)
             out.append((match, teams))
 
         out.sort(key=lambda pair: parse_dt(pair[0].get("begin_at")) or datetime.max)
-        return out[:MAX_MATCHES]
+        return out[:MAX_MATCHES], deferred
 
     @staticmethod
     def _owns(begin, day, tz, hour: int, force: bool) -> bool:
@@ -470,7 +592,8 @@ class Digest(commands.Cog):
         return datetime.now(timezone.utc) <= begin.astimezone(timezone.utc) < end
 
     def _build_header(
-        self, sub, today, chunk, *, total: int, part: int, parts: int, tz
+        self, sub, today, chunk, *, total: int, part: int, parts: int, tz,
+        pending: int = 0,
     ) -> discord.Embed:
         """The banner above the day's cards.
 
@@ -500,6 +623,17 @@ class Digest(commands.Cog):
                 name="Overnight",
                 value=f"{len(early)} of these start after midnight — "
                       f"predict them now, not in the morning.",
+                inline=False,
+            )
+        if pending:
+            # Otherwise a bracket day looks like the bot lost half the schedule.
+            embed.add_field(
+                name="Not drawn yet",
+                value=(
+                    f"{pending} more {'fixture' if pending == 1 else 'fixtures'} "
+                    f"today {'is' if pending == 1 else 'are'} waiting on a "
+                    f"result — posted here as soon as the bracket fills."
+                ),
                 inline=False,
             )
         embed.set_footer(

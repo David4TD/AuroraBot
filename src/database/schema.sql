@@ -178,6 +178,21 @@ CREATE TABLE IF NOT EXISTS digest_matches (
     FOREIGN KEY (digest_id) REFERENCES match_digests(id) ON DELETE CASCADE
 );
 
+-- A fixture a digest owned but could not list. A knockout slot reads
+-- "VIT vs TBD" until its feeder match is played, and a digest is built up to a
+-- day and a half before the matches it covers — so the bracket games people
+-- most want to predict were the ones guaranteed to be unlistable when the card
+-- went out, and nothing ever reconsidered them. The sweep re-checks these and
+-- posts a follow-up once both teams are known.
+CREATE TABLE IF NOT EXISTS digest_pending (
+    digest_id   INTEGER NOT NULL,
+    match_id    INTEGER NOT NULL,
+    begin_at    TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (digest_id, match_id),
+    FOREIGN KEY (digest_id) REFERENCES match_digests(id) ON DELETE CASCADE
+);
+
 -- ─── Predictions ────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS predictions (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,

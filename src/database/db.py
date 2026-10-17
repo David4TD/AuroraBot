@@ -854,6 +854,10 @@ class Database:
             "DELETE FROM digest_matches WHERE digest_id NOT IN "
             "(SELECT id FROM match_digests)"
         )
+        await self.conn.execute(
+            "DELETE FROM digest_pending WHERE digest_id NOT IN "
+            "(SELECT id FROM match_digests)"
+        )
         await self.conn.commit()
         return removed
 
@@ -897,6 +901,17 @@ class Database:
             (str(guild_id),),
         )
         return list(await cur.fetchall())
+
+    async def subscription(self, sub_id: int) -> aiosqlite.Row | None:
+        """One subscription by id, for a follow-up that outlives its digest.
+
+        Returns ``None`` when it has since been removed — a card for a
+        subscription nobody holds any more shouldn't be posted.
+        """
+        cur = await self.conn.execute(
+            "SELECT * FROM alert_subscriptions WHERE id = ?", (int(sub_id),)
+        )
+        return await cur.fetchone()
 
     async def all_subscriptions(self) -> list[aiosqlite.Row]:
         cur = await self.conn.execute("SELECT * FROM alert_subscriptions")
@@ -1092,6 +1107,62 @@ class Database:
                 )
                 for m in matches
             ],
+        )
+        await self.conn.commit()
+
+    async def digest_match_count(self, digest_id: int) -> int:
+        """How many matches this digest has listed so far.
+
+        A follow-up card has to carry on the numbering the first message
+        started, or two buttons both say "1." and the pairing stops reading.
+        """
+        cur = await self.conn.execute(
+            "SELECT COUNT(*) AS n FROM digest_matches WHERE digest_id = ?",
+            (digest_id,),
+        )
+        row = await cur.fetchone()
+        return int(row["n"] or 0)
+
+    async def add_digest_pending(self, digest_id: int, matches: list[dict]) -> None:
+        """Note the fixtures this digest owned but could not list yet.
+
+        ``INSERT OR IGNORE``: a re-run must not reset ``created_at`` or
+        resurrect a row the sweep has already resolved and deleted.
+        """
+        if not matches:
+            return
+        await self.conn.executemany(
+            "INSERT OR IGNORE INTO digest_pending (digest_id, match_id, begin_at) "
+            "VALUES (?, ?, ?)",
+            [(digest_id, int(m["match_id"]), m.get("begin_at")) for m in matches],
+        )
+        await self.conn.commit()
+
+    async def pending_digest_matches(self, limit: int = 20) -> list[aiosqlite.Row]:
+        """Unconfirmed fixtures still worth re-checking, soonest first.
+
+        Joined to the digest so the caller knows where to post and which
+        subscription it belongs to. Rows with no ``begin_at`` are kept — an
+        unscheduled bracket slot is exactly the kind that fills in late.
+        """
+        cur = await self.conn.execute(
+            """
+            SELECT p.digest_id, p.match_id, p.begin_at,
+                   d.guild_id, d.channel_id, d.subscription_id, d.game,
+                   d.tournament_id, d.tournament_name, d.local_date
+            FROM digest_pending p
+            JOIN match_digests d ON d.id = p.digest_id
+            ORDER BY p.begin_at IS NULL, p.begin_at
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        return list(await cur.fetchall())
+
+    async def clear_digest_pending(self, digest_id: int, match_id: int) -> None:
+        await self.conn.execute(
+            "DELETE FROM digest_pending WHERE digest_id = ? AND match_id = ?",
+            (digest_id, int(match_id)),
         )
         await self.conn.commit()
 
