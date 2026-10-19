@@ -12,6 +12,7 @@ import sys
 import tempfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -21,7 +22,7 @@ os.environ["ESPORTS_API_KEY"] = "fake"
 from src.cogs.digest import Digest                      # noqa: E402
 from src.cogs.games import ALL_KEYS                     # noqa: E402
 from src.database.db import Database                    # noqa: E402
-from src.utils.schedule import digest_window            # noqa: E402
+from src.utils.schedule import digest_window, post_at   # noqa: E402
 
 UTC = timezone.utc
 GUILD, CHANNEL, TOURNEY = 7, 500, 21917
@@ -168,7 +169,65 @@ def buttons(view):
     return [getattr(c, "item", c).label for c in view.children]
 
 
+async def worlds_play_in():
+    """The second report of this, to the hour: Worlds 2026 Play-In.
+
+    The Play-In grand final kicked off 2026-10-18 18:07Z. On a Sydney midnight
+    schedule the card that owns it posted 2026-10-18 00:00 local — and the
+    lower bracket final that decided MVK's place did not start until 05:06 that
+    morning, finishing around 09:49. So at post time the fixture read "KC vs
+    TBD", and the old code dropped it; the alerts still caught it at T-30,
+    which is exactly what was reported.
+
+    Rebuilt on the real offsets rather than the real dates, because a digest
+    refuses to list a match that has already started and these have.
+    """
+    print("\n[Worlds 2026 Play-In, on a Sydney midnight schedule]")
+    tz = ZoneInfo("Australia/Sydney")
+    kick = datetime.now(UTC) + timedelta(hours=29)
+    day = owning_day(kick, tz, 0)
+    posted = post_at(day, tz, 0).astimezone(UTC)
+    start, end = digest_window(day, tz, 0)
+    check("the Sydney card owns it", start <= kick < end, f"{start} .. {end}")
+    # The root cause, stated as the invariant rather than as a number: the card
+    # goes out before the window it covers has even opened, so it is always
+    # describing fixtures from far enough back that a bracket can still be open.
+    check("the card posts before its own window opens", posted < start,
+          f"posted {posted}, window opens {start}")
+    check("half a day or more before kick-off",
+          (kick - posted).total_seconds() / 3600 > 12,
+          f"{(kick - posted).total_seconds() / 3600:.1f}h")
+
+    kc = {"id": 201, "name": "Karmine Corp"}
+    mvk = {"id": 202, "name": "MVK Esports"}
+    half = fixture(1710931, "Grand Final: KC vs TBD", kick.isoformat(), [kc, TBD])
+    db, bot, ch, cog, sub, _ = await build([half])
+    bot.settings.digest_tz_name = "Australia/Sydney"
+    went_out = await cog._post_digest(sub, day)
+    check("nothing listable, so no sheet goes out", went_out is False)
+    check("but the fixture is held, not dropped",
+          len(await db.pending_digest_matches()) == 1)
+
+    # Ten hours later the lower bracket final is done and MVK are through.
+    bot.api.single = {1710931: fixture(
+        1710931, "Grand Final: KC vs MVK", kick.isoformat(), [kc, mvk])}
+    await cog._fill_brackets()
+    check("the card goes out once MVK are known", len(ch.sent) == 1,
+          str(len(ch.sent)))
+    said = ch.sent[0]["embeds"][0].description if ch.sent else ""
+    check("naming both teams", "Karmine Corp" in said and "MVK Esports" in said,
+          said)
+    check("with a button to pick between them",
+          bool(ch.sent) and len(buttons(ch.sent[0]["view"])) == 2,
+          str(buttons(ch.sent[0]["view"]) if ch.sent else []))
+    check("and in time for the pick to be worth making",
+          kick > datetime.now(UTC) + timedelta(hours=12))
+    await db.close()
+
+
 async def main():
+    await worlds_play_in()
+
     print("\n[the window that owned it posted before the feeder was played]")
     start, end = digest_window(date(2026, 10, 16), UTC, 0)
     kick = datetime.fromisoformat(REAL_KICKOFF.replace("Z", "+00:00"))
