@@ -26,7 +26,7 @@ Server* runs `/games` and picks some.
 | **Lineups** | `/lineup` — who's playing an upcoming match, by role |
 | **Tournaments** | `/tournament` — event info and its next 5 matches |
 | **Alerts** | `/alerts add`, `/alerts list`, `/alerts remove` |
-| **Schedule** | `/schedule` — post today's matches now |
+| **Schedule** | `/board` — post or refresh the event board · `/schedule` — a one-off daily card |
 | **Predictions** | `/predict`, `/mypredictions`, `/leaderboard` |
 | **Profile** | `/profile`, `/follow`, `/unfollow`, `/setgame` |
 | **Settings** | `/settings` — server preferences and resets |
@@ -71,20 +71,33 @@ When it **finishes**, the result posts itself — the same summary card `/result
 shows, with the score, the game-by-game breakdown, who called it right, and the
 tournament standings updated to include that match. No command needed.
 
-## 📅 Daily schedule
+## 📅 The event board
 
-League and tournament subscriptions get a message at local midnight with a
-**lineup card per match** — the same card `/lineup` shows — each with its own
-pair of team buttons for predictions. Busy days run across a few messages.
-`/schedule` posts today's immediately.
+League and tournament subscriptions get **one pinned message for the event**,
+edited in place as the week goes on. It lists every day's fixtures, and the
+four matches nearest kick-off carry team buttons so a prediction is still one
+tap; the rest of the week is behind **🎲 more**, which opens a private picker.
+**📋 My picks** shows you your own. `/board` posts or refreshes it now.
 
-The first message also carries the **server leaderboard** and the last few
-settled predictions with who called them right.
+A round that hasn't been drawn yet — a Swiss round, a lower bracket — shows as
+a count rather than rows of "TBD vs TBD", and fills itself in as the results
+that decide it land. Nothing to wait for and nothing to check back on.
+
+This replaces the per-day digest, which could only ever describe one day. Which
+day a match belonged to depended on a handover hour, so an event playing across
+it had its schedule cut in half: Worlds runs 04:00–11:00 in Sydney, which split
+a single eight-game Swiss round across two nights' cards. `/schedule` still
+posts a one-off daily card if you want one.
+
+Because the board is one message everyone sees, it can't show you *your* picks
+inline — Discord renders one body for every viewer. It shows how many people
+have picked each match; whose pick is whose stays private. The split itself
+stays hidden until kick-off, so a tally can't anchor the room.
 
 ## 🎲 Predictions
 
-Pick a winner with `/predict`, or tap a team button on a match reminder or the
-daily schedule. You can change your mind until kick-off, then it locks.
+Pick a winner with `/predict`, or tap a team button on the event board or a
+match reminder. You can change your mind until kick-off, then it locks.
 `/scoring` explains all of this inside Discord.
 
 ```
@@ -216,7 +229,7 @@ seconds.
 
 ## 🧑‍🤝‍🧑 Lineup cards
 
-`/lineup`, `/upcoming` and the daily digest all render the same pre-match card:
+`/lineup`, `/upcoming` and `/schedule` all render the same pre-match card:
 both teams side by side, one row per lane so the columns read across, with
 nationality flags and kick-off time.
 

@@ -736,6 +736,190 @@ class Database:
         await self.conn.commit()
         return cur.rowcount
 
+    # ── event boards ─────────────────────────────────────────────────────────
+    async def board_for(
+        self, channel_id: int, subscription_id: int
+    ) -> "aiosqlite.Row | None":
+        cur = await self.conn.execute(
+            "SELECT * FROM event_boards WHERE channel_id = ? AND subscription_id = ?",
+            (str(channel_id), subscription_id),
+        )
+        return await cur.fetchone()
+
+    async def create_board(
+        self,
+        guild_id: int | None,
+        channel_id: int,
+        subscription_id: int,
+        tournament_id: int | None,
+        tournament_name: str | None,
+        game: str | None,
+    ) -> int | None:
+        """Claim the board slot for a subscription. ``None`` if one exists.
+
+        The insert is the lock, same as the digest claim: two sweeps racing on
+        a channel that has never had a board can't both post one.
+        """
+        try:
+            cur = await self.conn.execute(
+                """
+                INSERT INTO event_boards
+                    (guild_id, channel_id, subscription_id, tournament_id,
+                     tournament_name, game)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(guild_id) if guild_id else None,
+                    str(channel_id),
+                    subscription_id,
+                    tournament_id,
+                    tournament_name,
+                    game,
+                ),
+            )
+            await self.conn.commit()
+            return cur.lastrowid
+        except aiosqlite.IntegrityError:
+            return None
+
+    async def boards(self) -> list["aiosqlite.Row"]:
+        cur = await self.conn.execute("SELECT * FROM event_boards")
+        return list(await cur.fetchall())
+
+    async def set_board_message(self, board_id: int, message_id: int | None) -> None:
+        await self.conn.execute(
+            "UPDATE event_boards SET message_id = ?, updated_at = datetime('now') "
+            "WHERE id = ?",
+            (str(message_id) if message_id else None, board_id),
+        )
+        await self.conn.commit()
+
+    async def set_board_signature(self, board_id: int, signature: str) -> None:
+        """Remember what was last rendered, so an unchanged board isn't edited."""
+        await self.conn.execute(
+            "UPDATE event_boards SET signature = ?, updated_at = datetime('now') "
+            "WHERE id = ?",
+            (signature, board_id),
+        )
+        await self.conn.commit()
+
+    async def delete_board(self, board_id: int) -> None:
+        await self.conn.execute("DELETE FROM event_boards WHERE id = ?", (board_id,))
+        await self.conn.execute(
+            "DELETE FROM board_matches WHERE board_id = ?", (board_id,)
+        )
+        await self.conn.commit()
+
+    async def set_board_matches(self, board_id: int, matches: list[dict]) -> None:
+        """Replace what this board is offering.
+
+        Rows are added before the stale ones go, so a button clicked during the
+        rewrite resolves against one set or the other and never against none.
+        """
+        if matches:
+            await self.conn.executemany(
+                """
+                INSERT OR REPLACE INTO board_matches
+                    (board_id, match_id, begin_at, team_a_id, team_a_name,
+                     team_b_id, team_b_name, tournament_id, tournament_name)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        board_id,
+                        int(m["match_id"]),
+                        m.get("begin_at"),
+                        m["team_a"][0],
+                        m["team_a"][1],
+                        m["team_b"][0],
+                        m["team_b"][1],
+                        m.get("tournament_id"),
+                        m.get("tournament_name"),
+                    )
+                    for m in matches
+                ],
+            )
+        keep = [int(m["match_id"]) for m in matches]
+        if keep:
+            marks = ",".join("?" * len(keep))
+            await self.conn.execute(
+                f"DELETE FROM board_matches WHERE board_id = ? "
+                f"AND match_id NOT IN ({marks})",  # noqa: S608 - placeholders only
+                [board_id, *keep],
+            )
+        else:
+            await self.conn.execute(
+                "DELETE FROM board_matches WHERE board_id = ?", (board_id,)
+            )
+        await self.conn.commit()
+
+    async def board_match(
+        self, board_id: int, match_id: int
+    ) -> "aiosqlite.Row | None":
+        cur = await self.conn.execute(
+            "SELECT * FROM board_matches WHERE board_id = ? AND match_id = ?",
+            (board_id, int(match_id)),
+        )
+        return await cur.fetchone()
+
+    async def board_match_rows(self, board_id: int) -> list["aiosqlite.Row"]:
+        cur = await self.conn.execute(
+            "SELECT * FROM board_matches WHERE board_id = ? "
+            "ORDER BY begin_at IS NULL, begin_at",
+            (board_id,),
+        )
+        return list(await cur.fetchall())
+
+    async def board_meta(self, board_id: int) -> "aiosqlite.Row | None":
+        cur = await self.conn.execute(
+            "SELECT * FROM event_boards WHERE id = ?", (board_id,)
+        )
+        return await cur.fetchone()
+
+    async def picks_for_matches(
+        self, guild_id: int | None, match_ids
+    ) -> dict[int, int]:
+        """How many people in this server have picked each of these matches.
+
+        The board is one shared message, so it cannot say "you picked Gen.G" —
+        Discord renders one body for every viewer. A count is the most it can
+        honestly show; whose pick is whose belongs in the ephemeral reply.
+        """
+        ids = [int(m) for m in dict.fromkeys(match_ids)]
+        if guild_id is None or not ids:
+            return {}
+        marks = ",".join("?" * len(ids))
+        cur = await self.conn.execute(
+            f"""
+            SELECT match_id, COUNT(*) AS n
+            FROM predictions
+            WHERE guild_id = ? AND match_id IN ({marks})
+            GROUP BY match_id
+            """,  # noqa: S608 - placeholders only
+            [str(guild_id), *ids],
+        )
+        return {int(r["match_id"]): int(r["n"]) for r in await cur.fetchall()}
+
+    async def user_picks_for_matches(
+        self, discord_id: int, guild_id: int | None, match_ids
+    ) -> dict[int, "aiosqlite.Row"]:
+        """One member's picks among these matches, for their own ephemeral view."""
+        ids = [int(m) for m in dict.fromkeys(match_ids)]
+        if not ids:
+            return {}
+        marks = ",".join("?" * len(ids))
+        params: list = [str(discord_id)]
+        where = "discord_id = ?"
+        if guild_id is not None:
+            where += " AND guild_id = ?"
+            params.append(str(guild_id))
+        cur = await self.conn.execute(
+            f"SELECT * FROM predictions WHERE {where} "
+            f"AND match_id IN ({marks})",  # noqa: S608 - placeholders only
+            [*params, *ids],
+        )
+        return {int(r["match_id"]): r for r in await cur.fetchall()}
+
     # ── tournament cache ─────────────────────────────────────────────────────
     async def save_tournaments(self, game: str, rows: list[dict]) -> None:
         """Persist a game's tournament list so a restart starts warm."""

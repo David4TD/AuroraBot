@@ -17,6 +17,7 @@ through — a suite that crashes on its third check is not a suite that passed.
 
 | suite | what it pins down |
 | --- | --- |
+| `test_board.py` | The event board: one pinned message per event, edited in place. Built on the real Worlds Swiss slate, including the undrawn rounds and what a shared message may not claim about its reader. |
 | `test_feed_depth.py` | Reading a tier-mixed feed deep enough to see Tier 1. Shaped on the measured Counter-Strike feed, where the first Tier 1 match sat at index 24 of 100. |
 | `test_bracket_fill.py` | A knockout fixture whose feeder match hasn't been played at digest time. Reproduces the VCT Champions lower bracket final that got no prediction sheet. |
 | `test_migrate.py` | `schema.sql` applying to a database that predates a table, and staying idempotent across restarts. |

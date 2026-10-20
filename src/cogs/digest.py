@@ -261,6 +261,12 @@ class Digest(commands.Cog):
             gid = str(sub["guild_id"])
             if sub["game"] not in enabled.get(gid, frozenset()):
                 continue
+            # A channel with an event board gets the board instead: it covers
+            # the whole week in one message, so a daily card beside it would be
+            # the same fixtures again. /schedule still forces one, which is the
+            # way back if a board turns out not to suit a channel.
+            if await self.bot.db.board_for(int(sub["channel_id"]), int(sub["id"])):
+                continue
             over = prefs.get(gid)
             tz = digest_tz(self.bot.settings, over)
             if local_now(tz).hour < digest_hour(self.bot.settings, over):

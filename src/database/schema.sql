@@ -193,6 +193,50 @@ CREATE TABLE IF NOT EXISTS digest_pending (
     FOREIGN KEY (digest_id) REFERENCES match_digests(id) ON DELETE CASCADE
 );
 
+-- ─── Event boards ───────────────────────────────────────────────────────────
+-- One pinned, continuously edited message per subscription, replacing the
+-- per-day digest. A daily card can only describe one day, and which day a
+-- match belongs to depends on a handover hour: Worlds plays 04:00-11:00 in
+-- Sydney, which straddles it, so a single Swiss round was split across two
+-- nights' cards. A board has no day to belong to. It also needs no deferred
+-- bookkeeping for undrawn fixtures, because it re-renders every sweep and a
+-- slot that fills simply appears.
+--
+-- `signature` is a digest of what was last rendered, so a sweep that would
+-- produce the same message makes no API call at all.
+CREATE TABLE IF NOT EXISTS event_boards (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id        TEXT,
+    channel_id      TEXT NOT NULL,
+    subscription_id INTEGER NOT NULL,
+    tournament_id   INTEGER,
+    tournament_name TEXT,
+    game            TEXT,
+    message_id      TEXT,
+    signature       TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (channel_id, subscription_id)
+);
+
+-- The matches a board is currently offering, so a button clicked days later
+-- resolves to two teams without trusting its label or re-hitting the API.
+-- Rewritten each time the board re-renders; a match that leaves the board
+-- keeps its row until then so a click mid-edit still works.
+CREATE TABLE IF NOT EXISTS board_matches (
+    board_id        INTEGER NOT NULL,
+    match_id        INTEGER NOT NULL,
+    begin_at        TEXT,
+    team_a_id       INTEGER NOT NULL,
+    team_a_name     TEXT NOT NULL,
+    team_b_id       INTEGER NOT NULL,
+    team_b_name     TEXT NOT NULL,
+    tournament_id   INTEGER,
+    tournament_name TEXT,
+    PRIMARY KEY (board_id, match_id),
+    FOREIGN KEY (board_id) REFERENCES event_boards(id) ON DELETE CASCADE
+);
+
 -- ─── Predictions ────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS predictions (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,

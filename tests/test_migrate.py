@@ -33,23 +33,28 @@ async def tables(db):
 async def main():
     path = str(Path(tempfile.mkdtemp()) / "m.db")
 
+    ADDED = {"digest_pending", "event_boards", "board_matches"}
+
     print("\n[a fresh database]")
     db = Database(path)
     await db.connect()
-    check("has digest_pending", "digest_pending" in await tables(db))
+    for name in sorted(ADDED):
+        check(f"has {name}", name in await tables(db))
     await db.close()
 
-    print("\n[an existing one that predates the table]")
+    print("\n[an existing one that predates them]")
     db = Database(path)
     await db.connect()
-    await db.conn.execute("DROP TABLE digest_pending")
+    for name in sorted(ADDED):
+        await db.conn.execute(f"DROP TABLE {name}")
     await db.conn.commit()
-    check("dropped for the test", "digest_pending" not in await tables(db))
+    check("dropped for the test", not (ADDED & await tables(db)))
     await db.close()
 
     db = Database(path)
     await db.connect()
-    check("the next startup recreates it", "digest_pending" in await tables(db))
+    check("the next startup recreates them", ADDED <= await tables(db),
+          str(sorted(ADDED - await tables(db))))
     check("and nothing else was lost",
           {"match_digests", "digest_matches", "predictions",
            "alert_subscriptions"} <= await tables(db))
@@ -67,6 +72,30 @@ async def main():
     cur = await db.conn.execute("SELECT COUNT(*) AS n FROM digest_pending")
     row = await cur.fetchone()
     check("a second startup keeps the rows", int(row["n"]) == 1, str(row["n"]))
+
+    print("\n[a board survives a restart too]")
+    board_id = await db.create_board(
+        guild_id=7, channel_id=500, subscription_id=1, tournament_id=297,
+        tournament_name="Worlds 2026", game="lol")
+    check("a board can be claimed", board_id is not None)
+    check("and only once",
+          await db.create_board(guild_id=7, channel_id=500, subscription_id=1,
+                               tournament_id=297, tournament_name="Worlds 2026",
+                               game="lol") is None)
+    await db.set_board_matches(board_id, [{
+        "match_id": 1000, "begin_at": None, "team_a": (1, "Gen.G"),
+        "team_b": (2, "IG"), "tournament_id": 297, "tournament_name": "Swiss"}])
+    await db.close()
+
+    db = Database(path)
+    await db.connect()
+    check("the board is still there",
+          await db.board_for(500, 1) is not None)
+    check("with its matches", len(await db.board_match_rows(board_id)) == 1)
+    print("\n[and deleting it takes its matches]")
+    await db.delete_board(board_id)
+    check("board gone", await db.board_for(500, 1) is None)
+    check("matches gone", await db.board_match_rows(board_id) == [])
     await db.close()
 
 
