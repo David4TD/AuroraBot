@@ -213,6 +213,9 @@ CREATE TABLE IF NOT EXISTS event_boards (
     tournament_name TEXT,
     game            TEXT,
     message_id      TEXT,
+    -- A week that outgrows one embed continues into a second message. The
+    -- buttons stay on the first, which is the one holding the nearest games.
+    message_id_2    TEXT,
     signature       TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now')),

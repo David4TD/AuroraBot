@@ -186,6 +186,16 @@ class Database:
             )
             await self._conn.commit()
 
+        # Step 11: a board that outgrows one embed continues into a second
+        # message. Existing boards have no part two, which NULL says correctly.
+        board_columns = await self._table_columns("event_boards")
+        if board_columns and "message_id_2" not in board_columns:
+            log.info("Adding the second-part column to event_boards…")
+            await self._conn.execute(
+                "ALTER TABLE event_boards ADD COLUMN message_id_2 TEXT"
+            )
+            await self._conn.commit()
+
         alert_message_columns = await self._table_columns("alert_messages")
         if alert_message_columns and "tournament_id" not in alert_message_columns:
             log.info("Adding tournament columns to alert_messages…")
@@ -786,10 +796,14 @@ class Database:
         cur = await self.conn.execute("SELECT * FROM event_boards")
         return list(await cur.fetchall())
 
-    async def set_board_message(self, board_id: int, message_id: int | None) -> None:
+    async def set_board_message(
+        self, board_id: int, message_id: int | None, part: int = 1
+    ) -> None:
+        """Remember which message is which part of a board."""
+        column = "message_id" if part == 1 else "message_id_2"
         await self.conn.execute(
-            "UPDATE event_boards SET message_id = ?, updated_at = datetime('now') "
-            "WHERE id = ?",
+            f"UPDATE event_boards SET {column} = ?, "  # noqa: S608 - fixed names
+            f"updated_at = datetime('now') WHERE id = ?",
             (str(message_id) if message_id else None, board_id),
         )
         await self.conn.commit()

@@ -28,7 +28,10 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from ..services.pandascore import PandaScoreError
-from ..utils.boardcard import TAPPABLE, build_board, open_matches, signature
+from ..utils.boardcard import (
+    CONTROLS_FIT_AT, MAX_TAPPABLE, TAPPABLE_PER_PART, build_board_parts,
+    button_slices, open_matches, signature,
+)
 from ..utils.conviction import as_view, pick_panel
 from ..utils.games import resolve_slug
 from ..utils.guildprefs import digest_tz
@@ -81,8 +84,18 @@ def _target_name(sub) -> str | None:
 def _label(match: dict, tz) -> str:
     """``04:00 Gen.G`` — the time disambiguates a team playing twice a day."""
     begin = parse_dt(match.get("begin_at"))
-    when = f"{begin.astimezone(tz):%H:%M} " if begin else ""
-    return when
+    return f"{begin.astimezone(tz):%H:%M} " if begin else ""
+
+
+def _span(first: dict, last: dict, tz) -> str:
+    """`` · 09:00–11:00`` for a bank of buttons, or nothing if unknown."""
+    a = parse_dt(first.get("begin_at"))
+    b = parse_dt(last.get("begin_at"))
+    if a is None:
+        return ""
+    if b is None or a == b:
+        return f" · {a.astimezone(tz):%H:%M}"
+    return f" · {a.astimezone(tz):%H:%M}–{b.astimezone(tz):%H:%M}"
 
 
 class BoardVoteButton(
@@ -432,11 +445,25 @@ class Board(commands.Cog):
         backers = await self.bot.db.picks_for_matches(
             guild_id, [int(m["id"]) for m in matches]
         )
-        embed = build_board(
+        # One bank of buttons per message, so eight games on a Saturday all get
+        # a button rather than being hidden behind a dropdown. With predictions
+        # off there are no buttons to run out of, so there is nothing to split
+        # for and the schedule stays in one message unless the text overflows.
+        votes = wants_votes(sub)
+        banks = button_slices(matches) if votes else [[]]
+        notes = [None]
+        for bank in banks[1:]:
+            first, last = bank[0], bank[-1]
+            span = _span(first, last, tz)
+            notes.append(f"🎲 The rest of the day{span}")
+        parts = build_board_parts(
             self.bot, matches, title=_target_name(sub) or "Event",
-            tz=tz, backers=backers,
+            tz=tz, backers=backers, min_parts=len(banks), notes=notes,
         )
-        sig = signature(embed, [int(m["id"]) for m in live])
+        # A bank with no message to sit on would be a silently unpickable
+        # match, so never offer more banks than there are parts.
+        banks = banks[:len(parts)]
+        sig = signature(parts, [int(m["id"]) for m in live])
 
         if board is None:
             board_id = await self.bot.db.create_board(
@@ -453,30 +480,63 @@ class Board(commands.Cog):
                 return True         # nothing has changed; no API call
 
         await self._store(board_id, live)
-        votes = wants_votes(sub)
-        view = self._view(board_id, live, tz) if votes else None
 
         channel = self.bot.get_channel(channel_id)
         if channel is None:
             log.warning("board: channel %s is not visible", channel_id)
             return False
 
-        message = None
-        if board is not None and board["message_id"]:
-            message = await self._edit(channel, int(board["message_id"]),
-                                       embed, view)
-            if message is None:
-                # Deleted by someone, or too old to edit: start a new one.
-                await self.bot.db.set_board_message(board_id, None)
-        if message is None:
-            message = await self._post(channel, embed, view)
-            if message is None:
+        for index, part in enumerate(parts):
+            bank = banks[index] if index < len(banks) else []
+            # The last part carries the controls, and the overflow picker only
+            # if there are more open matches than two messages can hold.
+            part_view = self._view(
+                board_id, bank, tz,
+                controls=(index == len(parts) - 1),
+                overflow=len(live) > MAX_TAPPABLE and index == len(parts) - 1,
+            ) if votes else None
+            if not await self._place(channel, board, board_id, index + 1,
+                                     part, part_view):
                 return False
-            await self.bot.db.set_board_message(board_id, message.id)
-            await self._pin(message)
+
+        if len(parts) == 1 and board is not None and board["message_id_2"]:
+            # The week shrank back to one card. Retire the spare rather than
+            # leaving a stale half-schedule pinned under the live one.
+            await self._retire(channel, int(board["message_id_2"]))
+            await self.bot.db.set_board_message(board_id, None, part=2)
 
         await self.bot.db.set_board_signature(board_id, sig)
         return True
+
+    async def _place(self, channel, board, board_id: int, part: int,
+                     embed, view) -> bool:
+        """Edit this part's message if it still exists, else post a new one."""
+        column = "message_id" if part == 1 else "message_id_2"
+        existing = int(board[column]) if board is not None and board[column] else None
+
+        if existing is not None:
+            if await self._edit(channel, existing, embed, view) is not None:
+                return True
+            # Deleted by someone, or too old to edit: start a new one.
+            await self.bot.db.set_board_message(board_id, None, part=part)
+
+        message = await self._post(channel, embed, view)
+        if message is None:
+            return False
+        await self.bot.db.set_board_message(board_id, message.id, part=part)
+        if part == 1:
+            await self._pin(message)
+        return True
+
+    async def _retire(self, channel, message_id: int) -> None:
+        try:
+            message = await channel.fetch_message(message_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return
+        try:
+            await message.delete()
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            log.info("board: could not remove the spare part: %s", exc)
 
     async def _store(self, board_id: int, live: list[dict]) -> None:
         rows = []
@@ -492,16 +552,20 @@ class Board(commands.Cog):
             })
         await self.bot.db.set_board_matches(board_id, rows)
 
-    def _view(self, board_id: int, live: list[dict], tz) -> discord.ui.View:
-        """Four matches as buttons, the rest behind the picker.
+    def _view(self, board_id: int, bank: list[dict], tz, *,
+              controls: bool = True, overflow: bool = False):
+        """One message's bank of buttons: a match per row, two teams each.
 
-        Five action rows of five buttons is the whole budget. One match per row
-        keeps a pair readable — which is what made the digest's buttons work —
-        so four rows of fixtures and one of controls is the most that fits.
+        A pair on its own row is what makes the choice readable — four buttons
+        side by side stop reading as two matches — so five matches is a
+        message's worth, and the controls take the fifth row only when four or
+        fewer matches need it.
         """
+        if not bank and not controls:
+            return None
         view = discord.ui.View(timeout=None)
         icons = self.bot.icons
-        for row, match in enumerate(live[:TAPPABLE]):
+        for row, match in enumerate(bank[:TAPPABLE_PER_PART]):
             teams = opponents(match)
             when = _label(match, tz)
             for side, team in enumerate(teams[:2]):
@@ -513,13 +577,12 @@ class Board(commands.Cog):
                         row=row,
                     )
                 )
-        if len(live) > TAPPABLE:
-            view.add_item(PickerButton(
-                board_id, label=f"🎲 {len(live) - TAPPABLE} more"))
-        elif live:
-            view.add_item(PickerButton(board_id, label="🎲 All matches"))
-        view.add_item(MyPicksButton(board_id))
-        return view
+        if controls and len(bank) <= CONTROLS_FIT_AT:
+            if overflow:
+                # Only past ten open matches, where no number of buttons helps.
+                view.add_item(PickerButton(board_id, label="🎲 Later matches"))
+            view.add_item(MyPicksButton(board_id))
+        return view if view.children else None
 
     async def _post(self, channel, embed, view):
         try:

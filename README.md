@@ -73,11 +73,17 @@ tournament standings updated to include that match. No command needed.
 
 ## 📅 The event board
 
-League and tournament subscriptions get **one pinned message for the event**,
-edited in place as the week goes on. It lists every day's fixtures, and the
-four matches nearest kick-off carry team buttons so a prediction is still one
-tap; the rest of the week is behind **🎲 more**, which opens a private picker.
-**📋 My picks** shows you your own. `/board` posts or refreshes it now.
+League and tournament subscriptions get **one pinned board for the event**,
+edited in place as the week goes on. It lists every day's fixtures, and every
+open match gets its own pair of team buttons — a prediction stays one tap, with
+no menu to open. **📋 My picks** shows you your own. `/board` posts or refreshes
+it now.
+
+Discord allows five rows of five buttons, and a readable pair needs a row to
+itself, so a message holds five matches. An eight-game Worlds Saturday is
+therefore **two messages** — five matches then three — rather than a dropdown.
+Past ten open matches the later ones do fall back to a picker, because at that
+point no arrangement of buttons helps.
 
 A round that hasn't been drawn yet — a Swiss round, a lower bracket — shows as
 a count rather than rows of "TBD vs TBD", and fills itself in as the results

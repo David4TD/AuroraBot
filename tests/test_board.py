@@ -27,7 +27,8 @@ from src.cogs.digest import Digest                      # noqa: E402
 from src.cogs.games import ALL_KEYS                     # noqa: E402
 from src.database.db import Database                    # noqa: E402
 from src.utils.boardcard import (                       # noqa: E402
-    TAPPABLE, build_board, open_matches, signature,
+    CONTROLS_FIT_AT, MAX_TAPPABLE, TAPPABLE_PER_PART, build_board,
+    button_slices, open_matches, signature,
 )
 
 UTC = timezone.utc
@@ -138,6 +139,10 @@ class Message:
     async def unpin(self, **kw):
         self.pinned = False
 
+    async def delete(self, **kw):
+        self.channel.messages.pop(self.id, None)
+        self.deleted = True
+
 
 class Channel:
     def __init__(self, cid):
@@ -215,7 +220,8 @@ async def main():
           len(ROUND1) == 8 and True)
     posted = await cog._refresh(sub)
     check("a board goes up", posted is True)
-    check("one message, not one per match", ch.posts == 1, str(ch.posts))
+    check("two messages, because eight games need two banks of buttons",
+          ch.posts == 2, str(ch.posts))
     embed = ch.messages[1001].embeds[0]
     text = body(embed)
     check("all eight of Round 1 are on it",
@@ -236,33 +242,47 @@ async def main():
     check("it never claims to know who is reading",
           "you " not in text.lower().replace("you've", ""), text[:300])
 
-    print("\n[one tap for the matches nearest kick-off]")
-    view = ch.messages[1001].view
-    taps = [x for x in labels(view) if "more" in x.lower() or "picks" in x.lower()]
-    check("four matches get buttons",
-          len(labels(view)) == TAPPABLE * 2 + len(taps),
-          str(labels(view)))
-    check("labelled with the kick-off time, since a team can play twice",
-          any(x.startswith("04:00") for x in labels(view)), str(labels(view)))
-    check("the rest are behind one more button",
-          any("more" in x.lower() for x in labels(view)), str(labels(view)))
+    print("\n[a button for every one of Saturday's eight games]")
+    one, two = ch.messages[1001], ch.messages[1002]
+    first, second = labels(one.view), labels(two.view)
+    times = [x for x in first + second if x[:5].count(":") == 1]
+    check("sixteen team buttons across the two messages",
+          len(times) == 16, f"{len(times)}: {first + second}")
+    check("five matches on the first",
+          len([x for x in first if x[:5].count(":") == 1])
+          == TAPPABLE_PER_PART * 2, str(first))
+    check("the other three on the second",
+          len([x for x in second if x[:5].count(":") == 1]) == 6, str(second))
+    check("no dropdown for an ordinary matchday",
+          not any("later" in x.lower() for x in first + second),
+          str(first + second))
+    check("labelled with kick-off, since a team can play twice",
+          any(x.startswith("04:00") for x in first), str(first))
+    tapped = {c.match_id for v in (one.view, two.view) for c in v.children
+              if hasattr(c, "match_id")}
+    check("every open match has a button of its own",
+          tapped == {int(m["id"]) for m in open_matches(slate())},
+          str(sorted(tapped)))
     check("and a member can see their own picks",
-          any("My picks" in x for x in labels(view)), str(labels(view)))
-    rows = {getattr(c, "item", c).row for c in view.children}
-    check("inside Discord's five rows", max(rows) <= 4, str(sorted(rows)))
+          any("My picks" in x for x in second), str(second))
+    for msg in (one, two):
+        rows = {getattr(c, "item", c).row for c in msg.view.children}
+        check("inside Discord's five rows", max(rows) <= 4, str(sorted(rows)))
+    check("the second says what its buttons are for",
+          "rest of the day" in (two.embeds[0].description or ""),
+          str(two.embeds[0].description))
 
-    print("\n[every open match is votable, not just the four]")
+    print("\n[every open match is stored, so a click resolves]")
     stored = await db.board_match_rows(1)
-    check("all eight are stored for the picker", len(stored) == 8,
-          str(len(stored)))
+    check("all eight are stored", len(stored) == 8, str(len(stored)))
     check("undrawn ones are not", all(r["team_a_id"] for r in stored))
 
     print("\n[a quiet sweep costs nothing]")
     before = bot.api.calls
     await cog._refresh(sub)
-    check("the message is not edited again",
+    check("the messages are not edited again",
           ch.messages[1001].edits == 0, str(ch.messages[1001].edits))
-    check("and no second message appears", ch.posts == 1, str(ch.posts))
+    check("and no further message appears", ch.posts == 2, str(ch.posts))
     check("though the feed is still read", bot.api.calls == before + 1)
 
     print("\n[a round being drawn edits the same message]")
@@ -274,7 +294,7 @@ async def main():
             [team(100 + i, ROUND1[i][0]), team(200 + 7 - i, ROUND1[7 - i][1])])
     bot.api.feed = feed
     await cog._refresh(sub)
-    check("still one message", ch.posts == 1, str(ch.posts))
+    check("still the same two messages", ch.posts == 2, str(ch.posts))
     check("edited in place", ch.messages[1001].edits == 1,
           str(ch.messages[1001].edits))
     text = body(ch.messages[1001].embeds[0])
@@ -375,12 +395,13 @@ async def main():
     db, bot, ch, cog, sub, _ = await build(slate())
     await cog._refresh(sub)
     del ch.messages[1001]
-    bot.api.feed = slate()[:4]          # force a change so it re-renders
+    # Four open matches need one bank, so this also drops back to one part.
+    bot.api.feed = slate()[:4]
     await cog._refresh(sub)
-    check("a replacement goes up", ch.posts == 2, str(ch.posts))
+    check("a replacement goes up", ch.posts == 3, str(ch.posts))
     board = await db.board_for(CHANNEL, int(sub["id"]))
     check("and the new id is remembered",
-          board and int(board["message_id"]) == 1002,
+          board and int(board["message_id"]) == 1003,
           str(board["message_id"] if board else None))
     await db.close()
 
@@ -428,6 +449,135 @@ async def main():
     check("and ones already under way",
           open_matches([fixture(1, "x", (datetime.now(UTC) - timedelta(
               hours=1)).isoformat(), [team(1, "A"), team(2, "B")])]) == [])
+
+    print("\n[a week too big for one embed continues into a second message]")
+    from src.utils.boardcard import (
+        EMBED_BUDGET, MAX_PARTS, build_board_parts, _embed_len,
+    )
+
+    def fortnight():
+        """Fourteen days of ten games: far past 6000 characters."""
+        out = []
+        for day in range(14):
+            for i in range(10):
+                a, b = ROUND1[i % len(ROUND1)]
+                out.append(fixture(
+                    50000 + day * 100 + i,
+                    f"Round {day + 1}: {a} vs {b}", at(day, 4 + i),
+                    [team(100 + i, f"{a} {day}"), team(200 + i, f"{b} {day}")]))
+        return out
+
+    big = build_board_parts(bot_only, fortnight(), title="Worlds 2026", tz=SYD)
+    check("it splits", len(big) == 2, str(len(big)))
+    check("part one is inside Discord's limit",
+          _embed_len(big[0]) <= 6000, str(_embed_len(big[0])))
+    check("and so is part two",
+          _embed_len(big[1]) <= 6000, str(_embed_len(big[1])))
+    check("part one stays under the working budget",
+          _embed_len(big[0]) <= EMBED_BUDGET + 1024,
+          str(_embed_len(big[0])))
+    check("never more than two parts", len(big) <= MAX_PARTS, str(len(big)))
+    check("part two says it is a continuation",
+          "continued" in (big[1].title or ""), big[1].title)
+    check("only part one carries the tally",
+          big[0].description and not big[1].description,
+          f"{big[0].description!r} / {big[1].description!r}")
+    check("both are footed", all(e.footer.text for e in big))
+    check("no day is split across the two",
+          not (set(f.name for f in big[0].fields)
+               & set(f.name for f in big[1].fields)))
+    check("part one holds the earliest days, where the buttons are",
+          "Saturday" in big[0].fields[0].name
+          or "Today" in big[0].fields[0].name
+          or "Tomorrow" in big[0].fields[0].name, big[0].fields[0].name)
+    check("fields stay inside the 25 cap",
+          all(len(e.fields) <= 25 for e in big),
+          str([len(e.fields) for e in big]))
+    check("every field value is inside 1024",
+          all(len(f.value) <= 1024 for e in big for f in e.fields))
+    tail = big[1].fields[-1]
+    check("what does not fit is accounted for, not dropped silently",
+          "more day" in tail.value or "Further ahead" not in tail.name,
+          f"{tail.name}: {tail.value[:80]}")
+
+    print("\n[a normal week stays one message]")
+    one = build_board_parts(bot_only, slate(), title="Worlds 2026", tz=SYD)
+    check("no second part", len(one) == 1, str(len(one)))
+
+    print("\n[the second message is posted, edited and retired]")
+
+    def heavy():
+        """Seven days of ten games with long names.
+
+        Measured at 4606 + 851 characters, so it splits — and every day is
+        inside the board's seven-day horizon, which is what the cog fetches.
+        Six days of the same came to 4606 and fitted in one, which is the
+        margin this is deliberately the far side of.
+        """
+        names = [
+            ("Hanwha Life Esports Challengers", "CTBC Flying Oyster"),
+            ("Anyone's Legend Esports Club", "Movistar Koi Academy"),
+            ("Team Secret Whales Rising", "Bilibili Gaming Junior"),
+            ("Dplus KIA Challengers", "Top Esports Performance"),
+            ("Karmine Corp Blue Stars", "Invictus Gaming Young"),
+        ]
+        out = []
+        for day in range(0, 7):
+            for i in range(10):
+                a, b = names[i % len(names)]
+                begin = (datetime.now(UTC) + timedelta(days=day, hours=i)
+                         ).isoformat()
+                out.append(fixture(
+                    60000 + day * 100 + i, f"Round {day}: {a} vs {b}", begin,
+                    [team(400 + i, f"{a} {day}"), team(500 + i, f"{b} {day}")]))
+        return out
+
+    check("the heavy slate really is over budget",
+          len(build_board_parts(bot_only, heavy(), title="Worlds 2026",
+                                tz=SYD)) == 2,
+          str(len(build_board_parts(bot_only, heavy(), title="Worlds 2026",
+                                    tz=SYD))))
+
+    db, bot, ch, cog, sub, _ = await build(heavy())
+    await cog._refresh(sub)
+    check("two messages go up", ch.posts == 2, str(ch.posts))
+    board = await db.board_for(CHANNEL, int(sub["id"]))
+    check("both ids are remembered",
+          bool(board["message_id"]) and bool(board["message_id_2"]),
+          f"{board['message_id']} / {board['message_id_2']}")
+    if not board["message_id_2"]:
+        print("    (skipping the rest of this section: no part two)")
+        await db.close()
+        raise SystemExit(1)
+    check("the buttons are on part one",
+          ch.messages[int(board["message_id"])].view is not None)
+    check("and on part two as well, which is the point of it",
+          ch.messages[int(board["message_id_2"])].view is not None)
+    check("only part one is pinned",
+          ch.messages[int(board["message_id"])].pinned
+          and not ch.messages[int(board["message_id_2"])].pinned)
+
+    second = int(board["message_id_2"])
+    # Down to four open matches: one bank, so the spare has nothing to carry.
+    bot.api.feed = slate()[:4]
+    await cog._refresh(sub)
+    check("the spare is removed", second not in ch.messages,
+          str(sorted(ch.messages)))
+    board = await db.board_for(CHANNEL, int(sub["id"]))
+    check("and forgotten", board["message_id_2"] is None,
+          str(board["message_id_2"]))
+    check("part one survives", int(board["message_id"]) in ch.messages)
+    await db.close()
+
+    print("\n[the signature covers both parts]")
+    pair = build_board_parts(bot_only, fortnight(), title="Worlds", tz=SYD)
+    solo = build_board_parts(bot_only, slate(), title="Worlds", tz=SYD)
+    check("one part and two never hash alike",
+          signature(pair, [1]) != signature(solo, [1]))
+    check("a change confined to part two still shows",
+          signature([pair[0], solo[0]], [1]) != signature(pair, [1]))
+    check("and a single embed is still accepted",
+          isinstance(signature(solo[0], [1]), str))
 
     print("\n[the signature is what makes continuous editing cheap]")
     one = build_board(bot_only, slate(), title="Worlds", tz=SYD)
