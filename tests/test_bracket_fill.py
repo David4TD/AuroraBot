@@ -365,6 +365,89 @@ async def main():
           len(await db.pending_digest_matches()) == 1)
     await db.close()
 
+    print("\n[a whole round drawn at once is one message, not eight]")
+    # The real burst: Worlds Round 1 ended 11:42 and all eight Round 2
+    # fixtures appeared between 12:01 and 12:03, so the next sweep had eight
+    # pending at the same moment. It posted a card each.
+    kick2 = datetime.now(UTC) + timedelta(hours=26)
+    undrawn = [fixture(7000 + i, f"Round 2: TBD vs TBD",
+                       (kick2 + timedelta(minutes=i * 30)).isoformat(), [TBD, TBD])
+               for i in range(8)]
+    db, bot, ch, cog, sub, _ = await build(undrawn)
+    day2 = owning_day(kick2, UTC, 0)
+    await cog._post_digest(sub, day2)
+    check("all eight are held", len(await db.pending_digest_matches()) == 8,
+          str(len(await db.pending_digest_matches())))
+
+    pairs = [("DK", "T1"), ("CFO", "MKOI"), ("HLE", "GEN"), ("LY", "KC"),
+             ("G2", "LOS"), ("IG", "TSW"), ("TES", "AL"), ("TL", "BLG")]
+    bot.api.single = {
+        7000 + i: fixture(7000 + i, f"Round 2: {a} vs {b}",
+                          (kick2 + timedelta(minutes=i * 30)).isoformat(),
+                          [{"id": 900 + i, "name": a}, {"id": 950 + i, "name": b}])
+        for i, (a, b) in enumerate(pairs)
+    }
+    ch.sent.clear()
+    await cog._fill_brackets()
+    check("two messages, five then three — not eight",
+          len(ch.sent) == 2, str(len(ch.sent)))
+    buttons_out = sum(len(m["view"].children) for m in ch.sent if m["view"])
+    check("every fixture still gets its own pair of buttons",
+          buttons_out == 16, str(buttons_out))
+    check("the first message carries five",
+          len(ch.sent[0]["view"].children) == 10,
+          str(len(ch.sent[0]["view"].children)))
+    check("and the second the other three",
+          len(ch.sent[1]["view"].children) == 6,
+          str(len(ch.sent[1]["view"].children)))
+    head = ch.sent[0]["embeds"][0]
+    check("the banner names the round, not eight matchups",
+          "Round 2" in (head.description or ""), str(head.description))
+    check("and says how many were drawn",
+          "8 fixtures" in (head.description or ""), str(head.description))
+    check("parts are numbered", "(1/2)" in (head.title or ""), head.title)
+    numbers = [getattr(c, "item", c).label.split(".")[0]
+               for m in ch.sent for c in m["view"].children]
+    check("numbering runs 1 to 8 across both",
+          sorted({int(n) for n in numbers}) == list(range(1, 9)),
+          str(sorted({int(n) for n in numbers})))
+    check("nothing is left pending", await db.pending_digest_matches() == [])
+    check("all eight are votable", await db.digest_match_count(1) == 8,
+          str(await db.digest_match_count(1)))
+    ch.sent.clear()
+    await cog._fill_brackets()
+    check("and a later sweep adds nothing", ch.sent == [], str(len(ch.sent)))
+    await db.close()
+
+    print("\n[a half-drawn round posts only what is drawn]")
+    db, bot, ch, cog, sub, _ = await build(undrawn)
+    await cog._post_digest(sub, day2)
+    bot.api.single = {
+        7000 + i: (
+            fixture(7000 + i, f"Round 2: {a} vs {b}",
+                    (kick2 + timedelta(minutes=i * 30)).isoformat(),
+                    [{"id": 900 + i, "name": a}, {"id": 950 + i, "name": b}])
+            if i < 3 else
+            fixture(7000 + i, "Round 2: TBD vs TBD",
+                    (kick2 + timedelta(minutes=i * 30)).isoformat(), [TBD, TBD])
+        )
+        for i, (a, b) in enumerate(pairs)
+    }
+    ch.sent.clear()
+    await cog._fill_brackets()
+    check("one message for the three that are drawn", len(ch.sent) == 1,
+          str(len(ch.sent)))
+    check("with three pairs of buttons",
+          len(ch.sent[0]["view"].children) == 6,
+          str(len(ch.sent[0]["view"].children)))
+    check("the undrawn five stay pending",
+          len(await db.pending_digest_matches()) == 5,
+          str(len(await db.pending_digest_matches())))
+    check("the banner is singular about parts",
+          "(1/" not in (ch.sent[0]["embeds"][0].title or ""),
+          ch.sent[0]["embeds"][0].title)
+    await db.close()
+
     print("\n[housekeeping]")
     db, bot, ch, cog, sub, _ = await build([fixture(9, LBF, KICKOFF, [VIT, TBD])])
     await cog._post_digest(sub, DAY)

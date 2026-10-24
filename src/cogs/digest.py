@@ -49,6 +49,7 @@ from ..utils.matches import (
 )
 from ..utils.predictions import Outcome, submit_prediction
 from ..utils.conviction import as_view, pick_panel
+from ..utils.scoring import stage_label
 from ..utils.subscriptions import wants_votes
 from ..utils.regions import region_flag
 from ..utils.schedule import (
@@ -285,6 +286,13 @@ class Digest(commands.Cog):
         the most riding on them — a lower bracket final, a grand final — were
         the ones certain not to get a prediction sheet.
 
+        **A whole round is drawn at once**, which is the thing this got wrong
+        first time around. Worlds Round 1 finished at 11:42 and all eight Round
+        2 fixtures appeared between 12:01 and 12:03; the next sweep posted a
+        card for each, so the channel got eight messages in a row. They are
+        batched per digest now, five to a message, the same as the schedule
+        they are joining.
+
         One lookup per pending fixture per sweep, bounded, and only while one
         exists: a server with nothing pending costs no API call at all.
         """
@@ -294,83 +302,162 @@ class Digest(commands.Cog):
             log.exception("could not read pending digest fixtures")
             return
 
+        grouped: dict[int, list] = {}
         for row in pending:
+            grouped.setdefault(int(row["digest_id"]), []).append(row)
+        for digest_id, rows in grouped.items():
             try:
-                await self._fill_one(row)
+                await self._fill_group(digest_id, rows)
+            except Exception:  # noqa: BLE001 - one digest must not stop the rest
+                log.exception("could not fill bracket for digest %s", digest_id)
+
+    async def _resolve_pending(self, digest_id: int, rows: list):
+        """Which of these can be listed now, and tidy away the ones that can't.
+
+        Returns ``[(row, match, teams)]`` for the fixtures that are drawn and
+        still ahead of kick-off. Anything that started while undrawn is dropped
+        — a card then would carry dead buttons — and anything still waiting on
+        a feeder result is simply left for the next sweep.
+        """
+        ready = []
+        for row in rows:
+            match_id = int(row["match_id"])
+            try:
+                match = await self.bot.api.get_match(match_id)
             except PandaScoreError as exc:
-                log.debug("pending match %s lookup failed: %s", row["match_id"], exc)
-            except Exception:  # noqa: BLE001 - one bad row must not stop the rest
-                log.exception("could not resolve pending match %s", row["match_id"])
+                log.debug("pending match %s lookup failed: %s", match_id, exc)
+                continue
 
-    async def _fill_one(self, row) -> None:
-        digest_id, match_id = int(row["digest_id"]), int(row["match_id"])
-        match = await self.bot.api.get_match(match_id)
+            begin = parse_dt(match.get("begin_at"))
+            if begin is not None and begin <= datetime.now(timezone.utc):
+                log.info("pending match %s started before its bracket filled",
+                         match_id)
+                await self.bot.db.clear_digest_pending(digest_id, match_id)
+                continue
 
-        begin = parse_dt(match.get("begin_at"))
-        now = datetime.now(timezone.utc)
-        if begin is not None and begin <= now:
-            # Predictions close at kick-off, so a card now would carry dead
-            # buttons. Give up on this one rather than re-asking every sweep.
-            log.info("pending match %s started before its bracket filled", match_id)
-            await self.bot.db.clear_digest_pending(digest_id, match_id)
+            teams = _teams_of(match)
+            if teams is None:
+                continue            # still waiting on the feeder result
+            ready.append((row, match, teams))
+
+        ready.sort(key=lambda t: parse_dt(t[1].get("begin_at")) or datetime.max)
+        return ready
+
+    async def _fill_group(self, digest_id: int, rows: list) -> None:
+        """Post every newly-drawn fixture for one digest, as few messages as fit."""
+        ready = await self._resolve_pending(digest_id, rows)
+        if not ready:
             return
 
-        teams = _teams_of(match)
-        if teams is None:
-            return            # still waiting on the feeder result
-
-        channel = self.bot.get_channel(int(row["channel_id"]))
+        first = ready[0][0]
+        channel = self.bot.get_channel(int(first["channel_id"]))
         if channel is None:
-            log.warning("pending digest: channel %s is not visible", row["channel_id"])
+            log.warning("pending digest: channel %s is not visible",
+                        first["channel_id"])
             return
 
-        sub = await self.bot.db.subscription(int(row["subscription_id"]))
+        sub = await self.bot.db.subscription(int(first["subscription_id"]))
         if sub is None:
             # The channel unsubscribed between the digest and the bracket
             # filling. Don't post into a channel that stopped asking.
-            await self.bot.db.clear_digest_pending(digest_id, match_id)
+            for row, _, _ in ready:
+                await self.bot.db.clear_digest_pending(
+                    digest_id, int(row["match_id"]))
             return
         votes = wants_votes(sub)
-        # Carries on the first message's numbering rather than restarting at 1.
-        start = await self.bot.db.digest_match_count(digest_id)
 
-        await self.bot.db.add_digest_matches(digest_id, [{
-            "match_id": match_id,
-            "begin_at": match.get("begin_at"),
-            "team_a": (teams[0]["id"], teams[0]["name"]),
-            "team_b": (teams[1]["id"], teams[1]["name"]),
-            "tournament_id": match_tournament_id(match),
-            "tournament_name": (match.get("tournament") or {}).get("name"),
-        }])
+        # Written before anything is posted, so a button in the message that
+        # follows always has a row to resolve against.
+        await self.bot.db.add_digest_matches(digest_id, [
+            {
+                "match_id": int(match["id"]),
+                "begin_at": match.get("begin_at"),
+                "team_a": (teams[0]["id"], teams[0]["name"]),
+                "team_b": (teams[1]["id"], teams[1]["name"]),
+                "tournament_id": match_tournament_id(match),
+                "tournament_name": (match.get("tournament") or {}).get("name"),
+            }
+            for _, match, teams in ready
+        ])
 
-        header = discord.Embed(
-            title=f"🔓 Now confirmed · {_target_name(sub) or ''}".strip(" ·")[:256],
+        # Carries on from what the day's card already listed rather than
+        # restarting at 1, and five to a message because that is one action row
+        # per match.
+        offset = await self.bot.db.digest_match_count(digest_id) - len(ready)
+        chunks = [ready[i:i + MATCHES_PER_MESSAGE]
+                  for i in range(0, len(ready), MATCHES_PER_MESSAGE)]
+        for part, chunk in enumerate(chunks):
+            start = offset + part * MATCHES_PER_MESSAGE
+            header = self._drawn_header(
+                sub, [m for _, m, _ in chunk], len(ready), part, len(chunks))
+            cards = await asyncio.gather(
+                *(build_card(self.bot, m, first["game"]) for _, m, _ in chunk)
+            )
+            for n, card in enumerate(cards, start=start + 1):
+                card.title = f"{n}. {card.title}"[:256]
+            pairs = [(m, t) for _, m, t in chunk]
+            try:
+                await channel.send(
+                    embeds=[header, *cards],
+                    view=(self._vote_view(digest_id, pairs, start)
+                          if votes else None),
+                )
+            except discord.Forbidden:
+                log.warning("pending digest: cannot post in %s",
+                            first["channel_id"])
+                return
+            except discord.HTTPException as exc:
+                log.warning("pending digest: failed to post in %s: %s",
+                            first["channel_id"], exc)
+                return
+            # Cleared per message, after it is out, so a failure part-way
+            # through retries only what did not make it.
+            for row, _, _ in chunk:
+                await self.bot.db.clear_digest_pending(
+                    digest_id, int(row["match_id"]))
+
+        log.info("Posted %d late bracket fixture(s) to channel %s in %d "
+                 "message(s) (digest %s)",
+                 len(ready), first["channel_id"], len(chunks), digest_id)
+
+    def _drawn_header(self, sub, matches: list[dict], total: int,
+                      part: int, parts: int) -> discord.Embed:
+        """The banner above a round that has just been drawn."""
+        name = _target_name(sub) or "Tournament"
+        flag = region_flag(name) or ""
+        title = f"🔓 Now confirmed · {flag} {name}".strip()
+        if parts > 1:
+            title = f"{title} ({part + 1}/{parts})"
+
+        if total == 1:
+            # A single slot filling is worth naming outright; a whole round is
+            # eight matchups the cards underneath already carry.
+            teams = opponents(matches[0])
+            who = (f"{teams[0]['name']} vs {teams[1]['name']}"
+                   if len(teams) >= 2 else stage_label(matches[0]) or "A fixture")
+            return discord.Embed(
+                title=title[:256],
+                description=(
+                    f"**{who}** — the slot on today's schedule that was still "
+                    f"being decided. Picks are open until kick-off."
+                ),
+                color=BRAND,
+            )
+
+        rounds = []
+        for match in matches:
+            label = stage_label(match)
+            if label and label not in rounds:
+                rounds.append(label)
+        which = " and ".join(rounds[:2]) if rounds else "The next fixtures"
+        return discord.Embed(
+            title=title[:256],
             description=(
-                f"{teams[0]['name']} vs {teams[1]['name']} — the slot on "
-                f"today's schedule that was still being decided."
+                f"**{which}** drawn — {total} fixtures the schedule couldn't "
+                f"name yet. Picks are open until each kick-off."
             ),
             color=BRAND,
         )
-        card = await build_card(self.bot, match, row["game"])
-        card.title = f"{start + 1}. {card.title}"[:256]
-        chunk = [(match, teams)]
-        try:
-            await channel.send(
-                embeds=[header, card],
-                view=self._vote_view(digest_id, chunk, start) if votes else None,
-            )
-        except discord.Forbidden:
-            log.warning("pending digest: cannot post in %s", row["channel_id"])
-            return
-        except discord.HTTPException as exc:
-            log.warning("pending digest: failed to post in %s: %s",
-                        row["channel_id"], exc)
-            return
-
-        # Cleared only after the card is out, so a failed post is retried.
-        await self.bot.db.clear_digest_pending(digest_id, match_id)
-        log.info("Posted late bracket fixture %s to channel %s (digest %s)",
-                 match_id, row["channel_id"], digest_id)
 
     async def _post_digest(self, sub, today, *, force: bool = False) -> bool:
         """Post one subscription's schedule for *today*. True if a message went out."""

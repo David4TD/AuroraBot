@@ -85,6 +85,10 @@ therefore **two messages** — five matches then three — rather than a dropdow
 Past ten open matches the later ones do fall back to a picker, because at that
 point no arrangement of buttons helps.
 
+The board **stays at the bottom of the channel**: when a reminder or a result
+is posted after it, the next sweep brings it back down rather than leaving it
+to be scrolled for. The old copy is removed, so there is only ever one.
+
 A round that hasn't been drawn yet — a Swiss round, a lower bracket — shows as
 a count rather than rows of "TBD vs TBD", and fills itself in as the results
 that decide it land. Nothing to wait for and nothing to check back on.

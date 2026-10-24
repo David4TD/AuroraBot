@@ -55,12 +55,17 @@ ROUND1 = [
 
 # Far enough out that nothing has started, and on a Saturday in Sydney so the
 # 04:00–11:00 block is the same one the digest used to cut in half.
-SAT = datetime.now(SYD).date() + timedelta(days=(5 - datetime.now(SYD).weekday()) % 7 or 7)
+# The matchday is tomorrow, not "the next Saturday". What matters is the
+# 04:00–11:00 local block that straddles the digest's 10am handover, and that
+# all three days sit inside the board's seven-day horizon — anchoring on a
+# weekday put the slate eight days out whenever the suite ran on a Saturday,
+# and the board correctly ignored the lot.
+MATCHDAY = datetime.now(SYD).date() + timedelta(days=1)
 
 
 def at(day_offset: int, hour: int) -> str:
     local = datetime.combine(
-        SAT + timedelta(days=day_offset), time(hour, 0), tzinfo=SYD)
+        MATCHDAY + timedelta(days=day_offset), time(hour, 0), tzinfo=SYD)
     return local.astimezone(UTC).isoformat()
 
 
@@ -168,6 +173,26 @@ class Channel:
 
     async def pins(self):
         return [m for m in self.messages.values() if m.pinned]
+
+    def history(self, limit=1):
+        newest = sorted(self.messages, reverse=True)[:limit]
+        channel = self
+
+        class It:
+            def __aiter__(self):
+                self.rest = list(newest)
+                return self
+
+            async def __anext__(self):
+                if not self.rest:
+                    raise StopAsyncIteration
+                return channel.messages[self.rest.pop(0)]
+
+        return It()
+
+    async def say(self, text="someone talks"):
+        """A message from anyone else, which buries whatever came before."""
+        return await self.send(content=text)
 
 
 class Bot:
@@ -376,6 +401,56 @@ async def main():
           "Gen.G** vs" in text and "u1" not in text, text[:200])
     await db.close()
 
+    print("\n[the board follows the channel down]")
+    db, bot, ch, cog, sub, _ = await build(slate())
+    await cog._refresh(sub)
+    original = sorted(ch.messages)
+    await cog._refresh(sub)
+    check("nothing moves while the board is still the last thing said",
+          sorted(ch.messages) == original, str(sorted(ch.messages)))
+
+    await ch.say("a match reminder lands")
+    await cog._refresh(sub)
+    check("once something is said after it, it comes back",
+          sorted(ch.messages)[-2:] != original[-1:],
+          str(sorted(ch.messages)))
+    for old in original:
+        check(f"the old part {old} is gone, not left as a duplicate",
+              old not in ch.messages, str(sorted(ch.messages)))
+    board = await db.board_for(CHANNEL, int(sub["id"]))
+    check("the new ids are recorded",
+          int(board["message_id"]) in ch.messages
+          and int(board["message_id_2"]) in ch.messages,
+          f"{board['message_id']}/{board['message_id_2']}")
+    check("it is the last thing in the channel again",
+          max(ch.messages) == int(board["message_id_2"]),
+          f"{max(ch.messages)} vs {board['message_id_2']}")
+    check("and still pinned",
+          ch.messages[int(board["message_id"])].pinned)
+    check("the buttons came with it",
+          ch.messages[int(board["message_id"])].view is not None)
+
+    moved = sorted(ch.messages)
+    await cog._refresh(sub)
+    check("and it settles again once it is last", sorted(ch.messages) == moved,
+          str(sorted(ch.messages)))
+    await db.close()
+
+    print("\n[a channel whose history can't be read is left alone]")
+    db, bot, ch, cog, sub, _ = await build(slate())
+    await cog._refresh(sub)
+    before = sorted(ch.messages)
+
+    def no_history(limit=1):
+        raise discord.Forbidden(
+            type("R", (), {"status": 403, "reason": "Forbidden"})(), "nope")
+
+    ch.history = no_history
+    await cog._refresh(sub)
+    check("the board is not reposted on a guess",
+          sorted(ch.messages) == before, str(sorted(ch.messages)))
+    await db.close()
+
     print("\n[the daily digest stands down where a board exists]")
     db, bot, ch, cog, sub, sub_id = await build(slate())
     digest = Digest.__new__(Digest)
@@ -486,10 +561,15 @@ async def main():
     check("no day is split across the two",
           not (set(f.name for f in big[0].fields)
                & set(f.name for f in big[1].fields)))
-    check("part one holds the earliest days, where the buttons are",
-          "Saturday" in big[0].fields[0].name
-          or "Today" in big[0].fields[0].name
-          or "Tomorrow" in big[0].fields[0].name, big[0].fields[0].name)
+    from src.utils.boardcard import _day_fields
+    expected = [n for n, _ in _day_fields(
+        bot_only, fortnight(), SYD, {}, datetime.now(UTC))]
+    got = [f.name for e in big for f in e.fields if f.name != "Further ahead"]
+    check("the two together read in order, earliest first",
+          got == expected[:len(got)], f"{got[:3]} vs {expected[:3]}")
+    check("part one holds the earliest day, where the buttons are",
+          big[0].fields[0].name == expected[0],
+          f"{big[0].fields[0].name} != {expected[0]}")
     check("fields stay inside the 25 cap",
           all(len(e.fields) <= 25 for e in big),
           str([len(e.fields) for e in big]))

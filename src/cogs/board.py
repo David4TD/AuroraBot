@@ -477,7 +477,12 @@ class Board(commands.Cog):
         else:
             board_id = int(board["id"])
             if board["signature"] == sig and board["message_id"]:
-                return True         # nothing has changed; no API call
+                # Nothing to say — but if the board has been buried since, it
+                # still has to move, so only a board that is both current and
+                # last costs no API call.
+                channel = self.bot.get_channel(channel_id)
+                if channel is None or not await self._is_buried(channel, board):
+                    return True
 
         await self._store(board_id, live)
 
@@ -485,6 +490,16 @@ class Board(commands.Cog):
         if channel is None:
             log.warning("board: channel %s is not visible", channel_id)
             return False
+
+        # A board people scroll back to find is a board people stop using, and
+        # the things that bury it are mostly the bot's own alerts. So when
+        # something has been said since, it comes back at the bottom rather
+        # than being edited where it sits. The sweep interval is the rate
+        # limit: at worst this moves once every few minutes.
+        buried = await self._is_buried(channel, board)
+        if buried and board is not None and board["signature"] == sig:
+            # Unchanged, but no longer last. Reposting is the whole point.
+            log.debug("board %s is buried; reposting", board_id)
 
         for index, part in enumerate(parts):
             bank = banks[index] if index < len(banks) else []
@@ -496,7 +511,7 @@ class Board(commands.Cog):
                 overflow=len(live) > MAX_TAPPABLE and index == len(parts) - 1,
             ) if votes else None
             if not await self._place(channel, board, board_id, index + 1,
-                                     part, part_view):
+                                     part, part_view, repost=buried):
                 return False
 
         if len(parts) == 1 and board is not None and board["message_id_2"]:
@@ -509,10 +524,19 @@ class Board(commands.Cog):
         return True
 
     async def _place(self, channel, board, board_id: int, part: int,
-                     embed, view) -> bool:
-        """Edit this part's message if it still exists, else post a new one."""
+                     embed, view, *, repost: bool = False) -> bool:
+        """Edit this part's message if it still exists, else post a new one.
+
+        With *repost*, the old message is removed first so the board comes back
+        at the bottom of the channel instead of staying where it was.
+        """
         column = "message_id" if part == 1 else "message_id_2"
         existing = int(board[column]) if board is not None and board[column] else None
+
+        if existing is not None and repost:
+            await self._retire(channel, existing)
+            await self.bot.db.set_board_message(board_id, None, part=part)
+            existing = None
 
         if existing is not None:
             if await self._edit(channel, existing, embed, view) is not None:
@@ -527,6 +551,23 @@ class Board(commands.Cog):
         if part == 1:
             await self._pin(message)
         return True
+
+    async def _is_buried(self, channel, board) -> bool:
+        """Has anything been said in this channel since the board went out?
+
+        Reads one message rather than a history page. A channel we cannot read
+        is reported as not buried: moving a board on a guess would mean
+        deleting and reposting it every few minutes forever.
+        """
+        if board is None or not board["message_id"]:
+            return False
+        last_part = board["message_id_2"] or board["message_id"]
+        try:
+            async for message in channel.history(limit=1):
+                return int(message.id) != int(last_part)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            log.debug("board: cannot read history in %s: %s", channel.id, exc)
+        return False
 
     async def _retire(self, channel, message_id: int) -> None:
         try:
