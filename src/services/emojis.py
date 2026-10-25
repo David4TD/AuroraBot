@@ -72,6 +72,16 @@ QUEUE_LIMIT = 500
 # A logo Discord refuses will be refused every time, so stop after this many
 # attempts instead of re-queueing it on every render.
 MAX_ATTEMPTS = 2
+# How long a team that failed MAX_ATTEMPTS times is left alone before being
+# tried again. Giving up for the lifetime of the process means a logo that
+# failed to a rate limit, a CDN hiccup or a full upload window stays missing
+# until someone restarts the bot — which looks exactly like a team that simply
+# has no icon.
+RETRY_AFTER_SECONDS = 3600.0
+# Re-mints per team per run, after which a flapping logo URL is left alone.
+# A real rebrand happens once; a feed that alternates between two URLs for the
+# same badge would otherwise burn the upload budget forever.
+MAX_REMINTS = 3
 
 _NAME_SAFE = re.compile(r"[^a-z0-9_]+")
 
@@ -271,6 +281,15 @@ class TeamIconStore:
         self.db = db
         self.logos = LogoCache(cache_dir)
         self._cache: dict[int, str] = {}          # team_id → "<:name:id>"
+        # The logo each cached icon was minted from. Without it a rebrand is
+        # invisible: icon() returns the cached markdown and nothing ever
+        # compares the URL again, so _mint's replace-on-change path — which
+        # works — was never reached and a team kept its old badge for good.
+        self._urls: dict[int, str] = {}           # team_id → image_url
+        # How many times a team has been re-minted this run. A guard against a
+        # feed that alternates between two URLs for the same logo, which would
+        # otherwise spend the upload budget flapping between them.
+        self._reminted: dict[int, int] = {}
         self._emoji_objects: dict[int, discord.Emoji] = {}   # emoji_id → Emoji
         self._by_name: dict[str, discord.Emoji] = {}         # emoji_name → Emoji
         self._queue: asyncio.Queue[tuple[int, str, str]] = asyncio.Queue(
@@ -280,6 +299,9 @@ class TeamIconStore:
         # team_id → failed attempts. A logo Discord won't take never will, so
         # give up rather than re-queue it on every single render.
         self._attempts: dict[int, int] = {}
+        # When a given-up team may be tried again, so a transient failure
+        # costs an hour rather than until the next restart.
+        self._retry_at: dict[int, float] = {}
         self._session: aiohttp.ClientSession | None = None
         self._worker: asyncio.Task | None = None
         self._uploads: list[float] = []           # timestamps in the window
@@ -324,6 +346,8 @@ class TeamIconStore:
                 self._cache[int(row["team_id"])] = self._markdown(
                     row["emoji_name"], emoji_id, bool(row["animated"])
                 )
+                if row["image_url"]:
+                    self._urls[int(row["team_id"])] = str(row["image_url"])
             else:
                 await self.db.drop_team_emoji(int(row["team_id"]))
                 stale += 1
@@ -370,11 +394,21 @@ class TeamIconStore:
             return ""
         team_id = int(team_id)
 
+        image_url = team.get("image_url")
         cached = self._cache.get(team_id)
         if cached:
+            known = self._urls.get(team_id)
+            if image_url and known and str(image_url) != known:
+                # The team rebranded. Queue the replacement and keep showing
+                # the old badge until it lands — a stale logo reads better
+                # than a team that suddenly has none.
+                if self._reminted.get(team_id, 0) < MAX_REMINTS:
+                    self._reminted[team_id] = self._reminted.get(team_id, 0) + 1
+                    self._attempts.pop(team_id, None)
+                    self._enqueue(team_id, str(team.get("name") or "team"),
+                                  str(image_url))
             return cached
 
-        image_url = team.get("image_url")
         if image_url:
             self._enqueue(team_id, str(team.get("name") or "team"), str(image_url))
         return ""
@@ -404,7 +438,13 @@ class TeamIconStore:
         if team_id in self._queued or self._queue.full():
             return
         if self._attempts.get(team_id, 0) >= MAX_ATTEMPTS:
-            return  # known bad logo; stop burning budget and log lines on it
+            if time.monotonic() < self._retry_at.get(team_id, 0.0):
+                return      # given up on recently; leave it be for now
+            # The cooldown is up. A logo Discord genuinely won't take will
+            # fail again and start another one; one that failed to a rate
+            # limit or a flaky CDN gets its second chance.
+            self._attempts.pop(team_id, None)
+            self._retry_at.pop(team_id, None)
         self._queued.add(team_id)
         try:
             self._queue.put_nowait((team_id, name, image_url))
@@ -446,10 +486,11 @@ class TeamIconStore:
         attempts = self._attempts.get(team_id, 0) + 1
         self._attempts[team_id] = attempts
         if attempts >= MAX_ATTEMPTS:
+            self._retry_at[team_id] = time.monotonic() + RETRY_AFTER_SECONDS
             log.info(
                 "Giving up on the icon for team %s after %d attempts (%s); "
-                "it will render without one",
-                team_id, attempts, reason,
+                "it will render without one and be retried in %d min",
+                team_id, attempts, reason, int(RETRY_AFTER_SECONDS / 60),
             )
         else:
             log.debug("Icon attempt %d failed for team %s: %s", attempts, team_id, reason)
@@ -457,7 +498,10 @@ class TeamIconStore:
     async def _mint(self, team_id: int, name: str, image_url: str) -> None:
         existing = await self.db.get_team_emoji(team_id)
         if existing and existing["image_url"] == image_url:
-            return  # another path already cached it
+            # Another path already cached it. Record the URL anyway, or every
+            # render re-queues this team for a logo it already has.
+            self._urls[team_id] = image_url
+            return
 
         emoji_name = emoji_name_for(team_id, name)
 
@@ -475,6 +519,7 @@ class TeamIconStore:
                 animated=owned.animated,
             )
             self._cache[team_id] = self._markdown(owned.name, owned.id, owned.animated)
+            self._urls[team_id] = image_url
             self._attempts.pop(team_id, None)
             log.debug("Adopted existing emoji %s for team %s", owned.name, team_id)
             return
@@ -528,6 +573,7 @@ class TeamIconStore:
             animated=emoji.animated,
         )
         self._cache[team_id] = self._markdown(emoji.name, emoji.id, emoji.animated)
+        self._urls[team_id] = image_url
         log.debug("Minted icon for team %s (%s)", team_id, emoji.name)
 
     async def _asset(self, team_id: int, image_url: str) -> bytes | None:
@@ -595,7 +641,10 @@ class TeamIconStore:
         for row in await self.db.coldest_team_emojis(EVICT_BATCH):
             await self._delete_emoji(int(row["emoji_id"]))
             await self.db.drop_team_emoji(int(row["team_id"]))
+            # Both maps, or the team keeps a URL with no icon behind it and
+            # the next render reads that as "unchanged" and never re-mints.
             self._cache.pop(int(row["team_id"]), None)
+            self._urls.pop(int(row["team_id"]), None)
         log.info("Evicted up to %d least-recently-used team icons", EVICT_BATCH)
 
     async def _delete_emoji(self, emoji_id: int) -> None:
