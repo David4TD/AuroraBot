@@ -323,10 +323,17 @@ async def main():
     check("edited in place", ch.messages[1001].edits == 1,
           str(ch.messages[1001].edits))
     text = body(ch.messages[1001].embeds[0])
-    check("round 2 now reads as fixtures", "not drawn yet" in text
-          and text.count("not drawn yet") == 1, text[-300:])
+    check("round 2 now reads as fixtures, not a promise",
+          "not drawn yet" not in text, text[-300:])
+    check("both shown days are playable",
+          all(x[0] in text for x in ROUND1), text[:200])
     check("and the open count grew",
           "**16** open" in text, ch.messages[1001].embeds[0].description)
+    # Round 3 is the third matchday, so it is off the board — but the card
+    # still says it exists rather than looking like the event ended.
+    check("the day beyond the board is accounted for",
+          "1 more day to come" in (ch.messages[1001].embeds[0].description or ""),
+          ch.messages[1001].embeds[0].description)
     await db.close()
 
     print("\n[voting from the board]")
@@ -399,6 +406,42 @@ async def main():
     check("the board shows the count", "🎲 3" in text, text[:400])
     check("but not who, and not the split",
           "Gen.G** vs" in text and "u1" not in text, text[:200])
+    await db.close()
+
+    print("\n[only the next two matchdays]")
+    from src.utils.boardcard import BOARD_DAYS, days_shown
+    db, bot, ch, cog, sub, _ = await build(slate())
+    await cog._refresh(sub)
+    text = body(ch.messages[1001].embeds[0])
+    days = [f.name for e in (ch.messages[1001].embeds[0],
+                             ch.messages[1002].embeds[0]) for f in e.fields]
+    check("two day headings, not six", len(days) == BOARD_DAYS, str(days))
+    check("the third matchday is not listed",
+          "Round 3" not in text and "4 games" not in text, text[-200:])
+    check("but it is counted", "1 more day to come" in text, text[:200])
+
+    kept, left = days_shown(slate(), SYD)
+    check("the trim keeps the first two days' fixtures",
+          len(kept) == 16, str(len(kept)))
+    check("and reports what it left", left == 1, str(left))
+    check("a one-day event loses nothing",
+          days_shown(slate()[:8], SYD) == (slate()[:8], 0))
+    check("an empty slate is survivable", days_shown([], SYD) == ([], 0))
+    check("a fixture with no kick-off time can't pick a day",
+          days_shown([fixture(1, "x", None, [TBD, TBD])], SYD) == ([], 0))
+
+    print("\n[buttons never outrun what is shown]")
+    tapped = {c.match_id for m in (ch.messages[1001], ch.messages[1002])
+              for c in (m.view.children if m.view else [])
+              if hasattr(c, "match_id")}
+    shown = {int(m["id"]) for m in open_matches(days_shown(slate(), SYD)[0])}
+    check("every button is for a match on the board", tapped <= shown,
+          str(sorted(tapped - shown)))
+    check("and every open match on it has one", tapped == shown,
+          str(sorted(shown - tapped)))
+    stored = {int(r["match_id"]) for r in await db.board_match_rows(1)}
+    check("nothing beyond the board is stored as votable", stored == shown,
+          str(sorted(stored ^ shown)))
     await db.close()
 
     print("\n[the board follows the channel down]")

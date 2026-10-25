@@ -74,7 +74,10 @@ tournament standings updated to include that match. No command needed.
 ## 📅 The event board
 
 League and tournament subscriptions get **one pinned board for the event**,
-edited in place as the week goes on. It lists every day's fixtures, and every
+edited in place as it goes on. It shows the **next two matchdays** — counted in
+days that have fixtures, so a rest day doesn't use one up — and says how many
+more are still to come. A whole week of Worlds is mostly rounds nobody can
+predict yet, and printing them pushed the matches you *can* off the top. It lists every day's fixtures, and every
 open match gets its own pair of team buttons — a prediction stays one tap, with
 no menu to open. **📋 My picks** shows you your own. `/board` posts or refreshes
 it now.

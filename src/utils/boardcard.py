@@ -37,8 +37,15 @@ UTC = timezone.utc
 
 # A day's fixtures go in one field, and a field value caps at 1024 characters.
 MAX_PER_DAY = 10
-# Days considered at all. The horizon is a week, so this is really a guard
-# against an event with a strange calendar rather than a limit anyone meets.
+# How many matchdays the board shows. A week of Worlds is mostly rounds that
+# haven't been drawn, so the back half of it was five near-identical lines
+# saying nothing is known yet — and it pushed the matches you can actually
+# predict off the top of the card.
+#
+# Counted in *days that have fixtures*, not in hours: events take rest days,
+# and "the next two matchdays" is what someone means by two days of an event.
+BOARD_DAYS = 2
+# A guard against an event with a strange calendar, not a limit anyone meets.
 MAX_DAYS = 12
 # Discord allows five action rows of five buttons. A match takes two buttons,
 # and keeping a pair on its own row is what makes the choice readable — four
@@ -88,6 +95,29 @@ def open_matches(matches: list[dict], *, now: datetime | None = None) -> list[di
     out.sort(key=lambda m: parse_dt(m.get("begin_at")) or datetime.max.replace(
         tzinfo=UTC))
     return out
+
+
+def days_shown(
+    matches: list[dict], tz=UTC, days: int = BOARD_DAYS,
+    now: datetime | None = None,
+) -> tuple[list[dict], int]:
+    """Trim to the next *days* matchdays. Returns ``(kept, days_left_out)``.
+
+    Everything downstream reads from this — the fields, the open count, the
+    buttons — so a fixture the board doesn't show is also one it doesn't offer
+    a button for. A board that listed a week but could only be tapped for the
+    first few matches would be the worst of both.
+    """
+    by_day: dict[date, list[dict]] = {}
+    for match in matches:
+        begin = parse_dt(match.get("begin_at"))
+        if begin is None:
+            continue
+        by_day.setdefault(begin.astimezone(tz).date(), []).append(match)
+    ordered = sorted(by_day)
+    keep = ordered[:max(1, days)]
+    kept = [m for day in keep for m in by_day[day]]
+    return kept, len(ordered) - len(keep)
 
 
 def _line(match: dict, icons, tz, backers: int) -> str:
@@ -191,6 +221,7 @@ def build_board_parts(
     now: datetime | None = None,
     min_parts: int = 1,
     notes: list[str] | None = None,
+    more_days: int = 0,
 ) -> list[discord.Embed]:
     """The event as one card, or two.
 
@@ -213,6 +244,11 @@ def build_board_parts(
     tally = [f"🎲 **{len(live)}** open to predict"]
     if picks:
         tally.append(f"{picks} pick{'' if picks == 1 else 's'} in so far")
+    if more_days:
+        # Otherwise two days of a three-week event reads as the bot having
+        # lost the rest of it.
+        tally.append(
+            f"{more_days} more day{'' if more_days == 1 else 's'} to come")
 
     fields = _day_fields(bot, matches, tz, backers, now)
 

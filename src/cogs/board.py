@@ -30,7 +30,7 @@ from discord.ext import commands, tasks
 from ..services.pandascore import PandaScoreError
 from ..utils.boardcard import (
     CONTROLS_FIT_AT, MAX_TAPPABLE, TAPPABLE_PER_PART, build_board_parts,
-    button_slices, open_matches, signature,
+    button_slices, days_shown, open_matches, signature,
 )
 from ..utils.conviction import as_view, pick_panel
 from ..utils.games import resolve_slug
@@ -441,6 +441,10 @@ class Board(commands.Cog):
 
         tz = digest_tz(self.bot.settings,
                        await self.bot.db.guild_settings(guild_id))
+        # The board is the next couple of matchdays, not the whole event: the
+        # back half of a Worlds week is rounds nobody can predict yet, and it
+        # pushed the ones you can off the top of the card.
+        matches, more_days = days_shown(matches, tz)
         live = open_matches(matches)
         backers = await self.bot.db.picks_for_matches(
             guild_id, [int(m["id"]) for m in matches]
@@ -459,6 +463,7 @@ class Board(commands.Cog):
         parts = build_board_parts(
             self.bot, matches, title=_target_name(sub) or "Event",
             tz=tz, backers=backers, min_parts=len(banks), notes=notes,
+            more_days=more_days,
         )
         # A bank with no message to sit on would be a silently unpickable
         # match, so never offer more banks than there are parts.
