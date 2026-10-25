@@ -196,6 +196,17 @@ class Database:
             )
             await self._conn.commit()
 
+        # Step 12: which message carried each alert, so the "starting soon"
+        # and "now live" cards can be cleared when the result lands. Existing
+        # rows have none, which NULL says correctly — those stay where they are.
+        alerted_columns = await self._table_columns("alerted_matches")
+        if alerted_columns and "message_id" not in alerted_columns:
+            log.info("Adding the message column to alerted_matches…")
+            await self._conn.execute(
+                "ALTER TABLE alerted_matches ADD COLUMN message_id TEXT"
+            )
+            await self._conn.commit()
+
         alert_message_columns = await self._table_columns("alert_messages")
         if alert_message_columns and "tournament_id" not in alert_message_columns:
             log.info("Adding tournament columns to alert_messages…")
@@ -1151,13 +1162,36 @@ class Database:
         )
         return list(await cur.fetchall())
 
-    async def mark_alerted(self, match_id: int, state: str, channel_id: int) -> None:
+    async def mark_alerted(
+        self, match_id: int, state: str, channel_id: int,
+        message_id: int | None = None,
+    ) -> None:
+        """Record that this channel has seen this match in this state.
+
+        ``INSERT OR IGNORE`` keeps the row a one-time claim, so a repost can
+        never double-announce; *message_id* is what makes the card findable
+        again when the result arrives and it becomes scrollback.
+        """
         await self.conn.execute(
-            "INSERT OR IGNORE INTO alerted_matches (match_id, state, channel_id) "
-            "VALUES (?, ?, ?)",
-            (match_id, state, str(channel_id)),
+            "INSERT OR IGNORE INTO alerted_matches "
+            "(match_id, state, channel_id, message_id) VALUES (?, ?, ?, ?)",
+            (match_id, state, str(channel_id),
+             str(message_id) if message_id else None),
         )
         await self.conn.commit()
+
+    async def alert_messages_for(
+        self, match_id: int, channel_id: int, states=("reminder", "live")
+    ) -> list[int]:
+        """The messages this channel posted about a match, by state."""
+        marks = ",".join("?" * len(states))
+        cur = await self.conn.execute(
+            f"SELECT message_id FROM alerted_matches "  # noqa: S608 - placeholders
+            f"WHERE match_id = ? AND channel_id = ? AND state IN ({marks}) "
+            f"AND message_id IS NOT NULL",
+            [match_id, str(channel_id), *states],
+        )
+        return [int(r["message_id"]) for r in await cur.fetchall()]
 
     # ── alert messages (reaction predictions) ────────────────────────────────
     async def record_alert_message(

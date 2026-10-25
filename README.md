@@ -104,6 +104,13 @@ inline — Discord renders one body for every viewer. It shows how many people
 have picked each match; whose pick is whose stays private. The split itself
 stays hidden until kick-off, so a tally can't anchor the room.
 
+Once a match finishes, its **"starting soon" and "now live" cards are removed**
+and the result card takes their place. Both exist to get a pick in before
+kick-off and to say a game is worth watching; neither is true afterwards, and a
+day of Worlds would otherwise leave three cards per match between you and the
+board. Only the bot's own alerts for that match are touched, found by the ids
+recorded when they were posted.
+
 ## 🎲 Predictions
 
 Pick a winner with `/predict`, or tap a team button on the event board or a

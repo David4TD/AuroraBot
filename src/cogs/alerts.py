@@ -749,9 +749,11 @@ class Alerts(commands.Cog):
             return
 
         guild_id = channel.guild.id if getattr(channel, "guild", None) else None
+        posted = False
         try:
             embed = await build_result_card(self.bot, match, game_key, guild_id)
             await channel.send(content="🏁 **Full time!**", embed=embed)
+            posted = True
         except discord.Forbidden:
             log.warning("Missing permission to post results in %s", channel_id)
         except discord.HTTPException as exc:
@@ -760,6 +762,40 @@ class Alerts(commands.Cog):
             # Marked regardless: a channel we can't post to must not be retried
             # every minute for three days.
             await self.bot.db.mark_alerted(match_id, "finished", channel_id)
+
+        if posted:
+            await self._clear_stale_cards(channel, match_id)
+
+    async def _clear_stale_cards(self, channel, match_id: int) -> None:
+        """Remove the "starting soon" and "now live" cards for a finished match.
+
+        Both exist to get a prediction in before kick-off and to say a game is
+        worth watching. Once the result is posted neither is true any more, and
+        a day of Worlds leaves three cards per match in the channel for the
+        board to be scrolled past. The result stays; those two go.
+
+        Only ever the bot's own alert messages, found by the ids recorded when
+        they were posted — nothing is deleted that this channel did not post
+        about this match. Deletion is done after the result is out, so a
+        failure there leaves the cards alone rather than clearing a match the
+        channel never saw concluded.
+        """
+        try:
+            ids = await self.bot.db.alert_messages_for(match_id, channel.id)
+        except Exception:  # noqa: BLE001 - never cost a result its post
+            log.exception("could not list stale cards for match %s", match_id)
+            return
+        for message_id in ids:
+            try:
+                message = await channel.fetch_message(message_id)
+                await message.delete()
+            except discord.NotFound:
+                continue          # someone cleaned up already
+            except discord.Forbidden:
+                log.info("no permission to tidy alerts in %s", channel.id)
+                return            # the rest will fail the same way
+            except discord.HTTPException as exc:
+                log.debug("could not remove alert %s: %s", message_id, exc)
 
     async def _announce(self, sub, match: dict, *, state: str) -> None:
         """Post one alert, unless this channel already saw this match/state."""
@@ -825,8 +861,9 @@ class Alerts(commands.Cog):
             log.warning("Failed to post alert: %s", exc)
             return
 
-        # Mark first: a later failure must not cause a repost.
-        await self.bot.db.mark_alerted(match_id, state, channel_id)
+        # Mark first: a later failure must not cause a repost. The message id
+        # rides along so this card can be cleared when the result lands.
+        await self.bot.db.mark_alerted(match_id, state, channel_id, message.id)
 
         # Reminders double as a prediction poll — the buttons pick a winner.
         if predictable:

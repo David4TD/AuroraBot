@@ -73,6 +73,21 @@ async def main():
     row = await cur.fetchone()
     check("a second startup keeps the rows", int(row["n"]) == 1, str(row["n"]))
 
+    print("\n[alerted_matches learns which message carried each alert]")
+    cur = await db.conn.execute("PRAGMA table_info(alerted_matches)")
+    cols = {r["name"] for r in await cur.fetchall()}
+    check("the column is there", "message_id" in cols, str(sorted(cols)))
+    await db.mark_alerted(555, "reminder", 500, 9001)
+    await db.mark_alerted(555, "live", 500, 9002)
+    await db.mark_alerted(555, "finished", 500, 9003)
+    found = await db.alert_messages_for(555, 500)
+    check("reminder and live come back", sorted(found) == [9001, 9002],
+          str(found))
+    check("the result card does not", 9003 not in found, str(found))
+    await db.mark_alerted(556, "reminder", 500)
+    check("a row written before the column existed is skipped",
+          await db.alert_messages_for(556, 500) == [])
+
     print("\n[a board survives a restart too]")
     board_id = await db.create_board(
         guild_id=7, channel_id=500, subscription_id=1, tournament_id=297,

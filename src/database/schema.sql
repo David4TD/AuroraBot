@@ -115,6 +115,10 @@ CREATE TABLE IF NOT EXISTS alerted_matches (
     match_id    INTEGER NOT NULL,
     state       TEXT NOT NULL,            -- 'reminder' | 'live' | 'finished'
     channel_id  TEXT NOT NULL,
+    -- Which message carried this alert. There is exactly one per row, so this
+    -- is where it belongs. Kept so the "starting soon" and "now live" cards
+    -- can be cleared once the result lands and they are only scrollback.
+    message_id  TEXT,
     alerted_at  TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (match_id, state, channel_id)
 );
