@@ -218,6 +218,34 @@ async def main():
           _emojis.RETRY_AFTER_SECONDS == 3600.0,
           str(_emojis.RETRY_AFTER_SECONDS))
 
+    print("\n[eviction drops the least recently *used*, not the oldest minted]")
+    lru = Store(db)
+    for n, tid in enumerate((701, 702, 703)):
+        lru.icon(team(tid, f"Team{n}"))
+        await drain(lru)
+    check("three icons minted", len(await db.coldest_team_emojis(3)) >= 3)
+    # last_used_at has one-second resolution and all three were minted inside
+    # the same second, so they are given distinct stamps to order against.
+    for tid in (701, 702, 703):
+        await db.conn.execute(
+            "UPDATE team_emojis SET last_used_at = '2020-01-01 00:00:00' "
+            "WHERE team_id = ?", (tid,))
+    await db.conn.commit()
+
+    lru.icon(team(701, "Team0"))
+    check("rendering a team marks it as used", 701 in lru._touched,
+          str(lru._touched))
+    await lru._flush_one_batch()
+
+    # Compared against each other, not the whole table: earlier sections in
+    # this suite share the database.
+    order = [int(r["team_id"]) for r in await db.coldest_team_emojis(100)]
+    check("the rendered team is warmer than the two nobody looked at",
+          order.index(701) > order.index(702)
+          and order.index(701) > order.index(703), str(order))
+    check("which is the whole point — it was minted first",
+          order.index(702) < order.index(701), str(order))
+
     print("\n[eviction clears both maps together]")
     store._cache[999] = "<:x:1>"
     store._urls[999] = OLD_LOGO

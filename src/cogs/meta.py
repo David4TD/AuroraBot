@@ -5,7 +5,13 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from datetime import datetime, timedelta, timezone
+
+from ..services.pandascore import PandaScoreError
 from ..utils.embeds import BRAND
+from ..utils.games import resolve_slug
+from ..utils.matches import league_id as match_league_id
+from ..utils.matches import tournament_id as match_tournament_id
 from ..utils.scoring import (
     BASE_POINTS, DOUBLE_DOWN, DOUBLE_DOWN_PENALTY, FINAL_WEIGHT,
     MAX_MULTIPLIER, MIN_VOTERS_FOR_ODDS, PERFECT_DAY_BONUS,
@@ -164,6 +170,96 @@ class Meta(commands.Cog):
         await interaction.response.send_message(
             f"🏓 Pong! `{round(self.bot.latency * 1000)}ms`", ephemeral=True
         )
+
+    @app_commands.command(
+        name="icons",
+        description="Why teams in this channel's event do or don't have a logo.",
+    )
+    @app_commands.describe(
+        refresh="Forget the cached icons for this event so they re-mint."
+    )
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.guild_only()
+    async def icons(
+        self, interaction: discord.Interaction, refresh: bool = False
+    ) -> None:
+        """A missing badge has a handful of possible causes and no visible one.
+
+        Without this the only way to tell "Discord refused this logo" from
+        "the upload window was full" from "no logo in the feed" is the
+        container's log, which is exactly the thing nobody has to hand when
+        they notice a team looks wrong.
+        """
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        teams = await self._event_teams(interaction)
+        if not teams:
+            await interaction.followup.send(
+                "No teams to check — this channel follows no league or "
+                "tournament with fixtures in the next week.", ephemeral=True
+            )
+            return
+
+        store = self.bot.icons
+        cleared = store.forget(teams) if refresh else 0
+        info = await store.diagnose(teams)
+
+        lines = []
+        for row in sorted(info["teams"], key=lambda r: r["state"] != "ok"):
+            mark = "✅" if row["state"] == "ok" else "⚠️"
+            lines.append(f"{mark} {row['emoji']} **{row['name']}** — {row['state']}")
+
+        embed = discord.Embed(
+            title="🖼️ Team icons",
+            description="\n".join(lines)[:4000],
+            color=BRAND,
+        )
+        health = [
+            f"{info['owned']}/{info['cap']} emoji slots used",
+            f"{info['cached']} cached",
+        ]
+        if info["queued"]:
+            health.append(f"{info['queued']} queued")
+        if info["blocked"] > 0:
+            health.append(f"rate limited for another {int(info['blocked'])}s")
+        if not info["enabled"]:
+            health.append("**icons are disabled** — see the startup log")
+        embed.add_field(name="Store", value=" · ".join(health), inline=False)
+        if refresh:
+            embed.set_footer(
+                text=f"Cleared {cleared} cached icon(s) — they re-mint on the "
+                     f"next card, within a minute or two."
+            )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    async def _event_teams(self, interaction: discord.Interaction) -> list[dict]:
+        """Every team playing in this channel's events over the next week."""
+        from ..utils.matches import opponents
+        from ..utils.tiers import filter_for
+
+        subs = [
+            s for s in await self.bot.db.list_subscriptions(interaction.guild_id)
+            if int(s["channel_id"]) == interaction.channel_id
+            and (s["league_id"] is not None or s["tournament_id"] is not None)
+        ]
+        found: dict[int, dict] = {}
+        for sub in subs:
+            slug = resolve_slug(sub["game"], self.bot.settings.cs_slug)
+            horizon = datetime.now(timezone.utc) + timedelta(days=7)
+            try:
+                feed = await self.bot.api.upcoming_until(slug, horizon)
+                feed += await self.bot.api.running_all(slug)
+            except PandaScoreError:
+                continue
+            by_league = (sub["scope"] or "game") == "league"
+            wanted = int(sub["league_id"] if by_league else sub["tournament_id"])
+            for match in filter_for(self.bot.settings, feed):
+                got = (match_league_id(match) if by_league
+                       else match_tournament_id(match))
+                if got != wanted:
+                    continue
+                for team in opponents(match):
+                    found.setdefault(int(team["id"]), team)
+        return list(found.values())
 
 
 async def setup(bot: commands.Bot) -> None:

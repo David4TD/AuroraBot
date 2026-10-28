@@ -78,6 +78,10 @@ MAX_ATTEMPTS = 2
 # until someone restarts the bot — which looks exactly like a team that simply
 # has no icon.
 RETRY_AFTER_SECONDS = 3600.0
+# How often the "last used" stamps are written back. icon() is synchronous and
+# called for every team on every card, so it records the hit in memory and a
+# background flush does the writes in one batch.
+TOUCH_FLUSH_SECONDS = 300.0
 # Re-mints per team per run, after which a flapping logo URL is left alone.
 # A real rebrand happens once; a feed that alternates between two URLs for the
 # same badge would otherwise burn the upload budget forever.
@@ -302,6 +306,13 @@ class TeamIconStore:
         # When a given-up team may be tried again, so a transient failure
         # costs an hour rather than until the next restart.
         self._retry_at: dict[int, float] = {}
+        # Teams rendered since the last flush. Eviction is meant to drop the
+        # *least recently used* icon, but nothing ever marked one as used, so
+        # last_used_at never moved off the mint time and the order was really
+        # oldest-minted-first — which evicts exactly the established teams
+        # that appear on every card.
+        self._touched: set[int] = set()
+        self._toucher: asyncio.Task | None = None
         self._session: aiohttp.ClientSession | None = None
         self._worker: asyncio.Task | None = None
         self._uploads: list[float] = []           # timestamps in the window
@@ -353,6 +364,8 @@ class TeamIconStore:
                 stale += 1
 
         self._worker = asyncio.create_task(self._run(), name="team-icon-minter")
+        self._toucher = asyncio.create_task(
+            self._flush_touches(), name="team-icon-toucher")
         files, size = await self.logos.stats()
         log.info(
             "Team icons ready: %d cached, %d owned emojis, %d stale rows cleared; "
@@ -366,11 +379,14 @@ class TeamIconStore:
         # Await the cancellation rather than just requesting it: otherwise the
         # worker can still be mid-sleep when the loop shuts down, which races
         # with closing the session it is using.
-        if self._worker is not None:
-            worker, self._worker = self._worker, None
-            worker.cancel()
+        for attr in ("_worker", "_toucher"):
+            task = getattr(self, attr, None)
+            if task is None:
+                continue
+            setattr(self, attr, None)
+            task.cancel()
             try:
-                await worker
+                await task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
         if self._session and not self._session.closed:
@@ -397,6 +413,8 @@ class TeamIconStore:
         image_url = team.get("image_url")
         cached = self._cache.get(team_id)
         if cached:
+            # Seen on a card: this is what keeps it out of the eviction batch.
+            self._touched.add(team_id)
             known = self._urls.get(team_id)
             if image_url and known and str(image_url) != known:
                 # The team rebranded. Queue the replacement and keep showing
@@ -476,6 +494,101 @@ class TeamIconStore:
                 raise
             except Exception:  # noqa: BLE001 - the worker must outlive failures
                 log.exception("team icon minting failed")
+
+    async def diagnose(self, teams: list[dict]) -> dict:
+        """Why these teams do or don't have an icon right now.
+
+        Written for the question "why has this team no badge?", which is
+        otherwise only answerable from the container's logs: the answer is
+        always one of a handful of states, and each of them is knowable here.
+        """
+        out = {
+            "enabled": self.enabled,
+            "owned": len(self._emoji_objects),
+            "cap": MAX_EMOJIS,
+            "cached": len(self._cache),
+            "queued": self._queue.qsize(),
+            "blocked": max(0.0, self._blocked_until - time.monotonic()),
+            "teams": [],
+        }
+        now = time.monotonic()
+        for team in teams:
+            team_id = team.get("id")
+            if not team_id:
+                continue
+            team_id = int(team_id)
+            url = team.get("image_url")
+            row = await self.db.get_team_emoji(team_id)
+            if team_id in self._cache:
+                if url and self._urls.get(team_id) and str(url) != self._urls[team_id]:
+                    state = "rebranded, replacement queued"
+                else:
+                    state = "ok"
+            elif not url:
+                state = "no logo in the feed"
+            elif team_id in self._queued:
+                state = "queued"
+            elif self._attempts.get(team_id, 0) >= MAX_ATTEMPTS:
+                wait = int(max(0.0, self._retry_at.get(team_id, 0.0) - now) / 60)
+                state = f"failed {self._attempts[team_id]}x, retrying in {wait} min"
+            elif row is not None:
+                state = "row exists but the emoji is gone"
+            else:
+                state = "not minted yet"
+            out["teams"].append({
+                "id": team_id,
+                "name": team.get("name") or "?",
+                "state": state,
+                "emoji": self._cache.get(team_id, ""),
+            })
+        return out
+
+    def forget(self, teams: list[dict]) -> int:
+        """Drop these teams' cached icons so the next render re-mints them.
+
+        The emoji itself is left alone; _mint adopts it again by name if it is
+        still owned, so this is a cheap way to unstick a team without touching
+        the application's emoji list.
+        """
+        cleared = 0
+        for team in teams:
+            team_id = team.get("id")
+            if not team_id:
+                continue
+            team_id = int(team_id)
+            self._attempts.pop(team_id, None)
+            self._retry_at.pop(team_id, None)
+            self._reminted.pop(team_id, None)
+            if self._cache.pop(team_id, None) is not None:
+                self._urls.pop(team_id, None)
+                cleared += 1
+        return cleared
+
+    async def _flush_one_batch(self) -> int:
+        """Write back the pending "last used" stamps. Returns how many."""
+        if not self._touched:
+            return 0
+        batch, self._touched = self._touched, set()
+        for team_id in batch:
+            await self.db.touch_team_emoji(team_id)
+        return len(batch)
+
+    async def _flush_touches(self) -> None:
+        """Write back which icons have been rendered, in one batch.
+
+        A write per render would be a write per team per card; a batch every
+        few minutes is enough for an eviction order measured in weeks.
+        """
+        while True:
+            try:
+                await asyncio.sleep(TOUCH_FLUSH_SECONDS)
+                written = await self._flush_one_batch()
+                if written:
+                    log.debug("Refreshed last-used for %d team icons", written)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - never take the task down
+                log.exception("could not refresh team icon usage")
 
     def _note_failure(self, team_id: int, reason: str) -> None:
         """Count a failure, warning once and then falling silent.

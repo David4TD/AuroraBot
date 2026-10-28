@@ -26,6 +26,7 @@ Server* runs `/games` and picks some.
 | **Lineups** | `/lineup` — who's playing an upcoming match, by role |
 | **Tournaments** | `/tournament` — event info and its next 5 matches |
 | **Alerts** | `/alerts add`, `/alerts list`, `/alerts remove` |
+| **Diagnostics** | `/icons` — why teams here do or don't have a logo (`refresh:true` re-mints them) |
 | **Schedule** | `/board` — post or refresh the event board · `/schedule` — a one-off daily card |
 | **Predictions** | `/predict`, `/mypredictions`, `/leaderboard` |
 | **Profile** | `/profile`, `/follow`, `/unfollow`, `/setgame` |

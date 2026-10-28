@@ -369,12 +369,16 @@ async def main():
     # The real burst: Worlds Round 1 ended 11:42 and all eight Round 2
     # fixtures appeared between 12:01 and 12:03, so the next sweep had eight
     # pending at the same moment. It posted a card each.
-    kick2 = datetime.now(UTC) + timedelta(hours=26)
+    # Anchored inside the owning window rather than at "now + 26h": the eight
+    # fixtures span four hours, and depending on the clock that span could
+    # straddle a handover and land in two different digests, so only some of
+    # them were held.
+    day2 = owning_day(datetime.now(UTC) + timedelta(hours=26), UTC, 0)
+    kick2 = digest_window(day2, UTC, 0)[0] + timedelta(hours=2)
     undrawn = [fixture(7000 + i, f"Round 2: TBD vs TBD",
                        (kick2 + timedelta(minutes=i * 30)).isoformat(), [TBD, TBD])
                for i in range(8)]
     db, bot, ch, cog, sub, _ = await build(undrawn)
-    day2 = owning_day(kick2, UTC, 0)
     await cog._post_digest(sub, day2)
     check("all eight are held", len(await db.pending_digest_matches()) == 8,
           str(len(await db.pending_digest_matches())))
