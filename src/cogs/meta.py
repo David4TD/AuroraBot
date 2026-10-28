@@ -217,6 +217,10 @@ class Meta(commands.Cog):
             f"{info['owned']}/{info['cap']} emoji slots used",
             f"{info['cached']} cached",
         ]
+        if info.get("orphans"):
+            # Emojis with no row behind them: nothing can render these, and
+            # they are what fills the store when appdata is newer than the app.
+            health.append(f"**{info['orphans']} orphaned** (reclaimable)")
         if info["queued"]:
             health.append(f"{info['queued']} queued")
         if info["blocked"] > 0:

@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT))
 os.environ["DISCORD_TOKEN"] = "fake"
 os.environ["ESPORTS_API_KEY"] = "fake"
 
+import discord                                          # noqa: E402
 from src.database.db import Database                    # noqa: E402
 from src.services.emojis import (                       # noqa: E402
     MAX_ATTEMPTS, MAX_REMINTS, TeamIconStore,
@@ -66,16 +67,19 @@ class Store(TeamIconStore):
             if emoji.id == int(emoji_id):
                 self._by_name.pop(name)
 
-    async def _create(self, name, image):
+    async def _create_emoji(self, name, image):
         self._next_id += 1
         return Emoji(self._next_id, name)
+
+    async def _create_raw(self, name, image):
+        return await self._create_emoji(name, image)
 
     async def _mint(self, team_id, name, image_url):
         # The real _mint reaches for bot.create_application_emoji; everything
         # else about it is under test, so only that call is stubbed.
         class Bot:
             create_application_emoji = staticmethod(
-                lambda name, image: self._create(name, image))
+                lambda name, image: self._create_raw(name, image))
 
         self.bot = Bot()
         self.created.append((name, image_url))
@@ -217,6 +221,71 @@ async def main():
     check("the cooldown is an hour by default",
           _emojis.RETRY_AFTER_SECONDS == 3600.0,
           str(_emojis.RETRY_AFTER_SECONDS))
+
+    print("\n[the cap is what Discord holds, not what our table says]")
+    from src.services.emojis import EVICT_BATCH, MAX_EMOJIS, _MINTED_NAME
+
+    full = Store(db)
+    # The shape that broke it: the application is full, our table is not,
+    # because the appdata volume was recreated under a live application.
+    full._emoji_objects = {
+        1000 + i: Emoji(1000 + i, f"old_team_{i}") for i in range(MAX_EMOJIS)
+    }
+    full._by_name = {e.name: e for e in full._emoji_objects.values()}
+    check("the table knows almost none of them",
+          await db.count_team_emojis() < MAX_EMOJIS,
+          str(await db.count_team_emojis()))
+    check("but the application is at the cap", full._owned() >= MAX_EMOJIS,
+          str(full._owned()))
+    await full._make_room()
+    check("room is made from what Discord holds",
+          full._owned() < MAX_EMOJIS, str(full._owned()))
+    check("by reclaiming emojis nothing can render",
+          len(full.deleted) == EVICT_BATCH, str(len(full.deleted)))
+
+    print("\n[and only ones this bot minted]")
+    mixed = Store(db)
+    mixed._emoji_objects = {
+        1: Emoji(1, "team_one_404"), 2: Emoji(2, "a_logo_99"),
+        3: Emoji(3, "company_mascot"), 4: Emoji(4, "checkmark"),
+    }
+    mixed._by_name = {e.name: e for e in mixed._emoji_objects.values()}
+    freed = await mixed._reclaim_orphans()
+    check("the team emojis go", freed == 2, str(freed))
+    check("and anything else is left alone",
+          sorted(mixed._emoji_objects) == [3, 4], str(sorted(mixed._emoji_objects)))
+    check("the name test is what decides",
+          bool(_MINTED_NAME.match("top_esports_126059"))
+          and not _MINTED_NAME.match("company_mascot"))
+
+    print("\n[a create refused for space makes room and tries again]")
+    class AtCap(Store):
+        def __init__(self, db):
+            super().__init__(db)
+            self.tries = 0
+
+        async def _create_raw(self, name, image):
+            self.tries += 1
+            if self.tries == 1:
+                exc = discord.HTTPException.__new__(discord.HTTPException)
+                exc.status, exc.code = 400, 30008
+                exc.text = "Maximum number of application emojis reached"
+                raise exc
+            return await Store._create_emoji(self, name, image)
+
+    capped = AtCap(db)
+    capped._emoji_objects = {
+        2000 + i: Emoji(2000 + i, f"stale_team_{i}") for i in range(30)
+    }
+    capped._by_name = {e.name: e for e in capped._emoji_objects.values()}
+    capped.icon(team(808, "Latecomer"))
+    await drain(capped)
+    check("it tried twice", capped.tries == 2, str(capped.tries))
+    check("and the team ends up with an icon",
+          capped.icon(team(808, "Latecomer")).startswith("<:"),
+          capped.icon(team(808, "Latecomer")))
+    check("without the failure being blamed on the logo",
+          capped._attempts.get(808, 0) == 0, str(capped._attempts.get(808)))
 
     print("\n[eviction drops the least recently *used*, not the oldest minted]")
     lru = Store(db)

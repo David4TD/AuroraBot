@@ -69,6 +69,11 @@ WINDOW_SECONDS = 60.0
 BACKOFF_SECONDS = 300.0          # after a 429 or repeated failures
 QUEUE_LIMIT = 500
 
+# An emoji this bot minted: a readable stem and the PandaScore team id. Only
+# names of this shape are ever reclaimed, so an application emoji put there
+# for some other purpose is never touched.
+_MINTED_NAME = re.compile(r"^[a-z0-9_]+_\d+$")
+
 # A logo Discord refuses will be refused every time, so stop after this many
 # attempts instead of re-queueing it on every render.
 MAX_ATTEMPTS = 2
@@ -78,6 +83,10 @@ MAX_ATTEMPTS = 2
 # until someone restarts the bot — which looks exactly like a team that simply
 # has no icon.
 RETRY_AFTER_SECONDS = 3600.0
+# Discord's "you have too many emojis" replies. Matched by code where it gives
+# one, and by message as a backstop, because the application-emoji endpoints
+# are newer than the documented list.
+MAX_EMOJI_CODES = frozenset({30008, 30018, 30031})
 # How often the "last used" stamps are written back. icon() is synchronous and
 # called for every team on every card, so it records the hit in memory and a
 # background flush does the writes in one batch.
@@ -313,6 +322,9 @@ class TeamIconStore:
         # that appear on every card.
         self._touched: set[int] = set()
         self._toucher: asyncio.Task | None = None
+        # Set when a failed create was followed by reclaiming space, so the
+        # same logo gets one more attempt before it is blamed.
+        self._freed_room = False
         self._session: aiohttp.ClientSession | None = None
         self._worker: asyncio.Task | None = None
         self._uploads: list[float] = []           # timestamps in the window
@@ -502,9 +514,14 @@ class TeamIconStore:
         otherwise only answerable from the container's logs: the answer is
         always one of a handful of states, and each of them is knowable here.
         """
+        known = {int(r["emoji_id"]) for r in await self.db.all_team_emojis()}
         out = {
             "enabled": self.enabled,
-            "owned": len(self._emoji_objects),
+            "owned": self._owned(),
+            "orphans": sum(
+                1 for eid, e in self._emoji_objects.items()
+                if eid not in known and _MINTED_NAME.match(e.name or "")
+            ),
             "cap": MAX_EMOJIS,
             "cached": len(self._cache),
             "queued": self._queue.qsize(),
@@ -642,8 +659,7 @@ class TeamIconStore:
             self._note_failure(team_id, "logo could not be fetched or decoded")
             return
 
-        if await self.db.count_team_emojis() >= MAX_EMOJIS:
-            await self._evict()
+        await self._make_room()
 
         # The logo changed and our own emoji already holds this name. Emoji
         # names must be unique per application and there is no endpoint to
@@ -655,17 +671,14 @@ class TeamIconStore:
                       owned.name, team_id)
             await self._delete_emoji(owned.id)
 
-        try:
-            emoji = await self.bot.create_application_emoji(
-                name=emoji_name, image=payload
-            )
-        except discord.HTTPException as exc:
-            if getattr(exc, "status", None) == 429:
-                self._blocked_until = time.monotonic() + BACKOFF_SECONDS
-                log.warning("Emoji rate limit hit; pausing icon minting for %ds",
-                            int(BACKOFF_SECONDS))
-            else:
-                self._note_failure(team_id, str(exc))
+        emoji = await self._create(team_id, emoji_name, payload)
+        if emoji is None and self._freed_room:
+            # The first attempt failed against a limit we could not see until
+            # Discord named it. Room has been made; one more go before this
+            # counts against the team, or a bot that starts at the cap gives
+            # up on every single team in turn and never recovers.
+            emoji = await self._create(team_id, emoji_name, payload)
+        if emoji is None:
             return
 
         self._attempts.pop(team_id, None)
@@ -688,6 +701,39 @@ class TeamIconStore:
         self._cache[team_id] = self._markdown(emoji.name, emoji.id, emoji.animated)
         self._urls[team_id] = image_url
         log.debug("Minted icon for team %s (%s)", team_id, emoji.name)
+
+    async def _create(self, team_id: int, emoji_name: str, payload: bytes):
+        """One attempt at creating an emoji, classifying what went wrong.
+
+        A rate limit pauses the whole worker; running out of room triggers a
+        reclaim and is worth retrying; anything else is this logo's problem
+        and counts against it.
+        """
+        self._freed_room = False
+        try:
+            return await self.bot.create_application_emoji(
+                name=emoji_name, image=payload
+            )
+        except discord.HTTPException as exc:
+            status = getattr(exc, "status", None)
+            code = getattr(exc, "code", None)
+            if status == 429:
+                self._blocked_until = time.monotonic() + BACKOFF_SECONDS
+                log.warning("Emoji rate limit hit; pausing icon minting for %ds",
+                            int(BACKOFF_SECONDS))
+                return None
+            if code in MAX_EMOJI_CODES or "maximum number" in str(exc).lower():
+                # Discord is the only place the real ceiling is known, so this
+                # is the first and sometimes only sign that we are at it.
+                log.warning("Application emoji limit reached; making room")
+                freed = await self._reclaim_orphans()
+                if not freed:
+                    await self._evict()
+                    freed = EVICT_BATCH
+                self._freed_room = bool(freed)
+                return None
+            self._note_failure(team_id, str(exc))
+            return None
 
     async def _asset(self, team_id: int, image_url: str) -> bytes | None:
         """The upload-ready PNG for a team: disk cache first, then the CDN."""
@@ -748,6 +794,45 @@ class TeamIconStore:
         if data is None:
             log.debug("Logo %s (%s) could not be normalised", url, content_type)
         return data
+
+    def _owned(self) -> int:
+        """How many emojis the application actually holds.
+
+        The cap used to be checked against the number of rows in our own
+        table, which is not what Discord enforces. The two drift apart as soon
+        as the database is newer than the application — a recreated appdata
+        volume, rows cleared by reconciliation — and then nothing evicts while
+        every create fails against a limit we cannot see. A team that hits
+        that never gets an icon at all.
+        """
+        return len(self._emoji_objects)
+
+    async def _reclaim_orphans(self) -> int:
+        """Delete emojis we own but no longer have a row for.
+
+        These are unreachable: nothing can render them, and they are exactly
+        what accumulates when the database is reset while the application
+        keeps its emojis. Reclaimed before evicting a live icon, because
+        deleting something nobody can use costs nothing.
+        """
+        known = {int(r["emoji_id"]) for r in await self.db.all_team_emojis()}
+        orphans = [eid for eid, emoji in self._emoji_objects.items()
+                   if eid not in known and _MINTED_NAME.match(emoji.name or "")]
+        for emoji_id in orphans[:EVICT_BATCH]:
+            await self._delete_emoji(emoji_id)
+        if orphans:
+            log.info("Reclaimed %d orphaned team emoji(s)",
+                     min(len(orphans), EVICT_BATCH))
+        return min(len(orphans), EVICT_BATCH)
+
+    async def _make_room(self) -> None:
+        """Ensure there is space for one more emoji, by the real count."""
+        if self._owned() < MAX_EMOJIS:
+            return
+        if await self._reclaim_orphans():
+            if self._owned() < MAX_EMOJIS:
+                return
+        await self._evict()
 
     async def _evict(self) -> None:
         """Delete the coldest icons to free room under the cap."""
