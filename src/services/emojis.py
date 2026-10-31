@@ -635,10 +635,16 @@ class TeamIconStore:
     async def _mint(self, team_id: int, name: str, image_url: str) -> None:
         existing = await self.db.get_team_emoji(team_id)
         if existing and existing["image_url"] == image_url:
-            # Another path already cached it. Record the URL anyway, or every
-            # render re-queues this team for a logo it already has.
-            self._urls[team_id] = image_url
-            return
+            # Already minted for this exact logo. Rehydrate rather than just
+            # returning: the in-memory cache can be empty while the row is
+            # intact — after /icons refresh, or any other path that clears it
+            # — and returning here left the team with no icon that no amount
+            # of re-rendering could bring back, because the row kept saying
+            # the work was done.
+            if self._rehydrate(team_id, existing, image_url):
+                return
+            # The row points at an emoji we no longer own. Fall through and
+            # mint it again rather than trusting a dangling reference.
 
         emoji_name = emoji_name_for(team_id, name)
 
@@ -674,11 +680,27 @@ class TeamIconStore:
         # the replacement is created — otherwise creation fails with 50035 and
         # a rebranded team can never update.
         if owned is not None:
+            # Names are unique per application and there is no endpoint to
+            # swap an image, so the old badge has to go before the new one can
+            # take its name. That is a window where the team has nothing, so
+            # don't open it unless there is budget to close it again.
+            if not self._budget_available():
+                log.debug("Deferring the replacement for team %s: no upload "
+                          "budget to put one back", team_id)
+                return
             log.debug("Replacing emoji %s for team %s (logo changed)",
                       owned.name, team_id)
             await self._delete_emoji(owned.id)
 
         emoji = await self._create(team_id, emoji_name, payload)
+        if emoji is None and owned is not None:
+            # The old badge is already gone and the replacement did not land.
+            # Drop the cached markdown so nothing renders a dead reference,
+            # and leave the row for the retry rather than claiming success.
+            self._cache.pop(team_id, None)
+            self._urls.pop(team_id, None)
+            log.warning("Team %s lost its icon replacing it; will retry",
+                        team_id)
         if emoji is None and self._name_taken:
             if await self._adopt_existing(team_id, emoji_name, image_url):
                 return
@@ -715,6 +737,22 @@ class TeamIconStore:
         self._cache[team_id] = self._markdown(emoji.name, emoji.id, emoji.animated)
         self._urls[team_id] = image_url
         log.debug("Minted icon for team %s (%s)", team_id, emoji.name)
+
+    def _rehydrate(self, team_id: int, row, image_url: str) -> bool:
+        """Put a known-good row back into the in-memory cache.
+
+        False when the emoji it names is not one we hold any more, which is
+        the caller's cue to mint instead of pointing at something gone.
+        """
+        emoji_id = int(row["emoji_id"])
+        if emoji_id not in self._emoji_objects:
+            return False
+        self._cache[team_id] = self._markdown(
+            row["emoji_name"], emoji_id, bool(row["animated"]))
+        self._urls[team_id] = image_url
+        self._attempts.pop(team_id, None)
+        self._retry_at.pop(team_id, None)
+        return True
 
     async def _adopt_existing(
         self, team_id: int, emoji_name: str, image_url: str

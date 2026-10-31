@@ -56,7 +56,8 @@ class Store(TeamIconStore):
     def __init__(self, db):
         super().__init__(bot=None, db=db)
         self.enabled = True
-        self.created: list[tuple[str, bytes]] = []
+        self.created: list[tuple[str, bytes]] = []   # emojis actually created
+        self.mints: list[tuple[str, str]] = []       # _mint calls
         self.deleted: list[int] = []
         self._next_id = 5000
 
@@ -72,6 +73,7 @@ class Store(TeamIconStore):
 
     async def _create_emoji(self, name, image):
         self._next_id += 1
+        self.created.append((name, image))
         return Emoji(self._next_id, name)
 
     async def _create_raw(self, name, image):
@@ -89,7 +91,7 @@ class Store(TeamIconStore):
                 lambda: self.fetch_application_emojis())
 
         self.bot = Bot()
-        self.created.append((name, image_url))
+        self.mints.append((name, image_url))
         return await super()._mint(team_id, name, image_url)
 
 
@@ -293,6 +295,76 @@ async def main():
           capped.icon(team(808, "Latecomer")))
     check("without the failure being blamed on the logo",
           capped._attempts.get(808, 0) == 0, str(capped._attempts.get(808)))
+
+    print("\n[a cleared cache comes back from its row]")
+    # What /icons refresh does, and what left teams permanently blank: the
+    # cache was emptied while the row stayed intact, and _mint saw the row,
+    # concluded the work was done and returned — without putting anything
+    # back. No amount of re-rendering could recover it.
+    back = Store(db)
+    back.icon(team(811, "Comes Back"))
+    await drain(back)
+    minted = back.icon(team(811, "Comes Back"))
+    check("it has an icon to begin with", minted.startswith("<:"), minted)
+    mints = len(back.created)
+
+    back.forget([team(811, "Comes Back")])
+    check("forget empties the cache", back.icon(team(811, "Comes Back")) == "")
+    await drain(back)   # the render above queued it
+    check("and the next render brings it straight back",
+          back.icon(team(811, "Comes Back")) == minted,
+          back.icon(team(811, "Comes Back")))
+    check("without minting anything new", len(back.created) == mints,
+          f"{len(back.created)} vs {mints}")
+
+    print("\n[a row pointing at an emoji we no longer hold]")
+    stale = Store(db)
+    stale.icon(team(812, "Stale"))
+    await drain(stale)
+    was = stale.icon(team(812, "Stale"))
+    # Someone removed it in the developer portal: the row survives, the emoji
+    # does not.
+    stale._emoji_objects.clear()
+    stale._by_name.clear()
+    stale.forget([team(812, "Stale")])
+    stale.icon(team(812, "Stale"))      # queues the re-mint
+    await drain(stale)
+    now = stale.icon(team(812, "Stale"))
+    check("it is minted again rather than pointing at nothing",
+          now.startswith("<:") and now != was, f"{was} -> {now}")
+
+    print("\n[a replacement is not started without the budget to finish it]")
+    broke = Store(db)
+    broke.icon(team(813, "Rebrand", OLD_LOGO))
+    await drain(broke)
+    had = broke.icon(team(813, "Rebrand", OLD_LOGO))
+    broke._uploads = [__import__("time").monotonic()] * 99   # budget spent
+    deletes = len(broke.deleted)
+    await broke._mint(813, "Rebrand", NEW_LOGO)
+    check("the old badge is left alone", len(broke.deleted) == deletes,
+          str(len(broke.deleted)))
+    check("so the team keeps the icon it had",
+          broke.icon(team(813, "Rebrand", OLD_LOGO)) == had)
+
+    print("\n[and if one is lost anyway, nothing renders a dead reference]")
+    class Vanishes(Store):
+        async def _create_raw(self, name, image):
+            exc = discord.HTTPException.__new__(discord.HTTPException)
+            exc.status, exc.code = 500, 0
+            exc.text = "Internal Server Error"
+            raise exc
+
+    gone = Vanishes(db)
+    gone._cache[814] = "<:old_814:1>"
+    gone._urls[814] = OLD_LOGO
+    gone._emoji_objects[1] = Emoji(1, "old_814")
+    gone._by_name["old_814"] = gone._emoji_objects[1]
+    await db.put_team_emoji(team_id=814, emoji_id=1, emoji_name="old_814",
+                            image_url=OLD_LOGO, animated=False)
+    await gone._mint(814, "old", NEW_LOGO)
+    check("the stale markdown is dropped", gone.icon(team(814, "old", NEW_LOGO))
+          in ("", None) or not gone._cache.get(814),
+          str(gone._cache.get(814)))
 
     print("\n[an emoji we own but lost track of is adopted, not refused]")
     # The shape: the startup list came back without this emoji (or the row was
