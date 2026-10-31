@@ -27,6 +27,8 @@ Server* runs `/games` and picks some.
 | **Tournaments** | `/tournament` — event info and its next 5 matches |
 | **Alerts** | `/alerts add`, `/alerts list`, `/alerts remove` |
 | **Diagnostics** | `/icons` — why teams here do or don't have a logo (`refresh:true` re-mints them) |
+
+Team logos are minted once and then cached. A logo that changes upstream is *reported* by `/icons`, never swapped automatically: replacing a badge means deleting the old one first, so it is a deliberate `/icons refresh:true`, not a side effect of a render.
 | **Schedule** | `/board` — post or refresh the event board · `/schedule` — a one-off daily card |
 | **Predictions** | `/predict`, `/mypredictions`, `/leaderboard` |
 | **Profile** | `/profile`, `/follow`, `/unfollow`, `/setgame` |

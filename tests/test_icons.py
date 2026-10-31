@@ -21,9 +21,7 @@ os.environ["ESPORTS_API_KEY"] = "fake"
 
 import discord                                          # noqa: E402
 from src.database.db import Database                    # noqa: E402
-from src.services.emojis import (                       # noqa: E402
-    MAX_ATTEMPTS, MAX_REMINTS, TeamIconStore,
-)
+from src.services.emojis import MAX_ATTEMPTS, TeamIconStore  # noqa: E402
 
 failures: list[str] = []
 OLD_LOGO = "https://cdn.pandascore.co/images/team/image/1/old.png"
@@ -126,22 +124,31 @@ async def main():
     check("and nothing is created", len(store.created) == before,
           str(len(store.created)))
 
-    print("\n[the team rebrands]")
+    print("\n[the team rebrands: reported, never acted on by itself]")
     rebranded = team(image_url=NEW_LOGO)
     shown = store.icon(rebranded)
-    check("the old badge still shows while the new one mints",
-          shown == first, f"{shown} vs {first}")
-    check("but a re-mint is queued", store._queue.qsize() == 1,
-          str(store._queue.qsize()))
+    check("the cached badge keeps rendering", shown == first,
+          f"{shown} vs {first}")
+    check("and nothing is queued behind the scenes",
+          store._queue.qsize() == 0, str(store._queue.qsize()))
+    info = await store.diagnose([rebranded])
+    check("but /icons says the logo moved",
+          "logo changed" in info["teams"][0]["state"],
+          info["teams"][0]["state"])
+    check("and says what to do about it",
+          "refresh" in info["teams"][0]["state"], info["teams"][0]["state"])
+
+    print("\n[refresh is the only thing that replaces it]")
+    deletes = len(store.deleted)
+    store.forget([rebranded])
+    store.icon(rebranded)
     await drain(store)
     second = store.icon(rebranded)
     check("the icon changes", second != first, f"{second} vs {first}")
     check("the old emoji is deleted, freeing the name",
-          len(store.deleted) == 1, str(store.deleted))
-    check("the new logo is recorded", store._urls[101] == NEW_LOGO,
-          str(store._urls.get(101)))
+          len(store.deleted) == deletes + 1, str(store.deleted))
     row = await db.get_team_emoji(101)
-    check("and persisted, so a restart doesn't re-mint",
+    check("and the new logo is recorded",
           row and row["image_url"] == NEW_LOGO,
           str(row["image_url"] if row else None))
 
@@ -153,7 +160,7 @@ async def main():
           str(store._queue.qsize()))
     check("and none is done", len(store.created) == before)
 
-    print("\n[a logo URL that flaps is not chased forever]")
+    print("\n[a URL that flaps costs nothing, because nothing watches it]")
     flapper = Store(db)
     flapper.icon(team(202, "Flap", OLD_LOGO))
     await drain(flapper)
@@ -162,9 +169,9 @@ async def main():
         # Alternating between two URLs for the same badge.
         flapper.icon(team(202, "Flap", NEW_LOGO if i % 2 == 0 else OLD_LOGO))
         await drain(flapper)
-    extra = len(flapper.created) - mints
-    check("it gives up after a few goes", extra <= MAX_REMINTS, str(extra))
-    check("and the team still has an icon",
+    check("not one extra upload", len(flapper.created) == mints,
+          str(len(flapper.created) - mints))
+    check("and the team keeps its icon throughout",
           flapper.icon(team(202, "Flap", OLD_LOGO)).startswith("<:"))
 
     print("\n[a team the feed gives no logo for]")
@@ -308,14 +315,28 @@ async def main():
     check("it has an icon to begin with", minted.startswith("<:"), minted)
     mints = len(back.created)
 
-    back.forget([team(811, "Comes Back")])
-    check("forget empties the cache", back.icon(team(811, "Comes Back")) == "")
+    # An empty cache with the row intact — the state that left every team
+    # blank, reachable any time the two fall out of step.
+    back._cache.clear()
+    back._urls.clear()
+    check("nothing renders", back.icon(team(811, "Comes Back")) == "")
     await drain(back)   # the render above queued it
     check("and the next render brings it straight back",
           back.icon(team(811, "Comes Back")) == minted,
           back.icon(team(811, "Comes Back")))
-    check("without minting anything new", len(back.created) == mints,
-          f"{len(back.created)} vs {mints}")
+    check("from the row, without minting anything new",
+          len(back.created) == mints, f"{len(back.created)} vs {mints}")
+
+    print("\n[refresh, by contrast, mints outright]")
+    before = len(back.created)
+    back.forget([team(811, "Comes Back")])
+    back.icon(team(811, "Comes Back"))
+    await drain(back)
+    check("a new badge is created", len(back.created) == before + 1,
+          f"{len(back.created)} vs {before}")
+    check("and the team has one again",
+          back.icon(team(811, "Comes Back")).startswith("<:"),
+          back.icon(team(811, "Comes Back")))
 
     print("\n[a row pointing at an emoji we no longer hold]")
     stale = Store(db)

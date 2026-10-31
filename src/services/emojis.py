@@ -95,10 +95,6 @@ NAME_TAKEN_CODE = 50035
 # called for every team on every card, so it records the hit in memory and a
 # background flush does the writes in one batch.
 TOUCH_FLUSH_SECONDS = 300.0
-# Re-mints per team per run, after which a flapping logo URL is left alone.
-# A real rebrand happens once; a feed that alternates between two URLs for the
-# same badge would otherwise burn the upload budget forever.
-MAX_REMINTS = 3
 
 _NAME_SAFE = re.compile(r"[^a-z0-9_]+")
 
@@ -303,10 +299,10 @@ class TeamIconStore:
         # compares the URL again, so _mint's replace-on-change path — which
         # works — was never reached and a team kept its old badge for good.
         self._urls: dict[int, str] = {}           # team_id → image_url
-        # How many times a team has been re-minted this run. A guard against a
-        # feed that alternates between two URLs for the same logo, which would
-        # otherwise spend the upload budget flapping between them.
-        self._reminted: dict[int, int] = {}
+        # Teams /icons refresh has asked to be re-minted outright, rather
+        # than rehydrated from a row that already looks correct. The only way
+        # a changed logo is ever picked up.
+        self._forced: set[int] = set()
         self._emoji_objects: dict[int, discord.Emoji] = {}   # emoji_id → Emoji
         self._by_name: dict[str, discord.Emoji] = {}         # emoji_name → Emoji
         self._queue: asyncio.Queue[tuple[int, str, str]] = asyncio.Queue(
@@ -432,18 +428,16 @@ class TeamIconStore:
         image_url = team.get("image_url")
         cached = self._cache.get(team_id)
         if cached:
-            # Seen on a card: this is what keeps it out of the eviction batch.
+            # Cached means cached. A changed logo upstream is *not* acted on
+            # here: replacing a badge means deleting the old one first, which
+            # briefly leaves the team with none and spends upload budget on a
+            # render nobody asked to change. /icons reports a logo that has
+            # moved, and /icons refresh:true is what acts on it.
+            #
+            # Recording the hit is the whole of the side effect, and it is
+            # what keeps a team that appears on every card out of the
+            # eviction batch.
             self._touched.add(team_id)
-            known = self._urls.get(team_id)
-            if image_url and known and str(image_url) != known:
-                # The team rebranded. Queue the replacement and keep showing
-                # the old badge until it lands — a stale logo reads better
-                # than a team that suddenly has none.
-                if self._reminted.get(team_id, 0) < MAX_REMINTS:
-                    self._reminted[team_id] = self._reminted.get(team_id, 0) + 1
-                    self._attempts.pop(team_id, None)
-                    self._enqueue(team_id, str(team.get("name") or "team"),
-                                  str(image_url))
             return cached
 
         if image_url:
@@ -544,8 +538,11 @@ class TeamIconStore:
             url = team.get("image_url")
             row = await self.db.get_team_emoji(team_id)
             if team_id in self._cache:
-                if url and self._urls.get(team_id) and str(url) != self._urls[team_id]:
-                    state = "rebranded, replacement queued"
+                stored = row["image_url"] if row is not None else None
+                if url and stored and str(url) != str(stored):
+                    # Reported, not acted on: updating costs the badge for a
+                    # moment and is a deliberate choice, not a side effect.
+                    state = "logo changed upstream — /icons refresh to update"
                 else:
                     state = "ok"
             elif not url:
@@ -568,11 +565,12 @@ class TeamIconStore:
         return out
 
     def forget(self, teams: list[dict]) -> int:
-        """Drop these teams' cached icons so the next render re-mints them.
+        """Re-mint these teams' icons on the next render.
 
-        The emoji itself is left alone; _mint adopts it again by name if it is
-        still owned, so this is a cheap way to unstick a team without touching
-        the application's emoji list.
+        The only route by which a changed logo is ever picked up: ordinary
+        rendering uses whatever is cached and never second-guesses it, because
+        replacing a badge means deleting the old one first and briefly leaving
+        the team with nothing.
         """
         cleared = 0
         for team in teams:
@@ -582,9 +580,12 @@ class TeamIconStore:
             team_id = int(team_id)
             self._attempts.pop(team_id, None)
             self._retry_at.pop(team_id, None)
-            self._reminted.pop(team_id, None)
+            # Marked so _mint mints outright instead of rehydrating a row
+            # that already looks right — otherwise a refresh can restore a
+            # badge but never update one.
+            self._forced.add(team_id)
+            self._urls.pop(team_id, None)
             if self._cache.pop(team_id, None) is not None:
-                self._urls.pop(team_id, None)
                 cleared += 1
         return cleared
 
@@ -634,7 +635,9 @@ class TeamIconStore:
 
     async def _mint(self, team_id: int, name: str, image_url: str) -> None:
         existing = await self.db.get_team_emoji(team_id)
-        if existing and existing["image_url"] == image_url:
+        forced = team_id in self._forced
+        self._forced.discard(team_id)
+        if existing and existing["image_url"] == image_url and not forced:
             # Already minted for this exact logo. Rehydrate rather than just
             # returning: the in-memory cache can be empty while the row is
             # intact — after /icons refresh, or any other path that clears it
