@@ -87,6 +87,10 @@ RETRY_AFTER_SECONDS = 3600.0
 # one, and by message as a backstop, because the application-emoji endpoints
 # are newer than the documented list.
 MAX_EMOJI_CODES = frozenset({30008, 30018, 30031})
+# "Name already taken". The emoji exists and we have simply lost track of it —
+# a row cleared by reconciliation, a list that came back short, an older build
+# that minted it. Creating again can never work; adopting it always can.
+NAME_TAKEN_CODE = 50035
 # How often the "last used" stamps are written back. icon() is synchronous and
 # called for every team on every card, so it records the hit in memory and a
 # background flush does the writes in one batch.
@@ -325,6 +329,9 @@ class TeamIconStore:
         # Set when a failed create was followed by reclaiming space, so the
         # same logo gets one more attempt before it is blamed.
         self._freed_room = False
+        # Set when Discord says the name is taken, meaning the emoji is really
+        # there and this is a bookkeeping problem, not a logo problem.
+        self._name_taken = False
         self._session: aiohttp.ClientSession | None = None
         self._worker: asyncio.Task | None = None
         self._uploads: list[float] = []           # timestamps in the window
@@ -672,6 +679,13 @@ class TeamIconStore:
             await self._delete_emoji(owned.id)
 
         emoji = await self._create(team_id, emoji_name, payload)
+        if emoji is None and self._name_taken:
+            if await self._adopt_existing(team_id, emoji_name, image_url):
+                return
+            # Still not found after a fresh look: fall through so the normal
+            # failure accounting applies rather than silently doing nothing.
+            self._note_failure(team_id, "name taken but no such emoji found")
+            return
         if emoji is None and self._freed_room:
             # The first attempt failed against a limit we could not see until
             # Discord named it. Room has been made; one more go before this
@@ -702,6 +716,42 @@ class TeamIconStore:
         self._urls[team_id] = image_url
         log.debug("Minted icon for team %s (%s)", team_id, emoji.name)
 
+    async def _adopt_existing(
+        self, team_id: int, emoji_name: str, image_url: str
+    ) -> bool:
+        """Take ownership of an emoji Discord says is already there.
+
+        The startup list is the only thing that tells us what we own, so if it
+        ever comes back short — or a row is cleared while the emoji survives —
+        every later create for that team fails with "name taken" and the team
+        is written off as having a bad logo. It does not: the badge exists.
+        Asking Discord again and adopting what comes back fixes it for good.
+        """
+        try:
+            existing = await self.bot.fetch_application_emojis()
+        except discord.HTTPException as exc:
+            log.warning("could not re-list application emojis: %s", exc)
+            return False
+
+        self._emoji_objects = {e.id: e for e in existing}
+        self._by_name = {e.name: e for e in existing}
+        owned = self._by_name.get(emoji_name)
+        if owned is None:
+            return False
+
+        await self.db.put_team_emoji(
+            team_id=team_id, emoji_id=owned.id, emoji_name=owned.name,
+            image_url=image_url, animated=owned.animated,
+        )
+        self._cache[team_id] = self._markdown(
+            owned.name, owned.id, owned.animated)
+        self._urls[team_id] = image_url
+        self._attempts.pop(team_id, None)
+        self._retry_at.pop(team_id, None)
+        log.info("Adopted the existing emoji for team %s (%s); "
+                 "our list of what we own was stale", team_id, owned.name)
+        return True
+
     async def _create(self, team_id: int, emoji_name: str, payload: bytes):
         """One attempt at creating an emoji, classifying what went wrong.
 
@@ -710,6 +760,7 @@ class TeamIconStore:
         and counts against it.
         """
         self._freed_room = False
+        self._name_taken = False
         try:
             return await self.bot.create_application_emoji(
                 name=emoji_name, image=payload
@@ -721,6 +772,13 @@ class TeamIconStore:
                 self._blocked_until = time.monotonic() + BACKOFF_SECONDS
                 log.warning("Emoji rate limit hit; pausing icon minting for %ds",
                             int(BACKOFF_SECONDS))
+                return None
+            if code == NAME_TAKEN_CODE or "already exists" in str(exc).lower():
+                # Not a failure of this logo: the emoji is on the application
+                # already and our view of it is stale. Say so and let _mint
+                # go and find it rather than burning the team's attempts on a
+                # create that can never succeed.
+                self._name_taken = True
                 return None
             if code in MAX_EMOJI_CODES or "maximum number" in str(exc).lower():
                 # Discord is the only place the real ceiling is known, so this

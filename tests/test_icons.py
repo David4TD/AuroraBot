@@ -50,6 +50,9 @@ class Emoji:
 class Store(TeamIconStore):
     """The real store with the network and Discord ends replaced."""
 
+    async def fetch_application_emojis(self):
+        return list(self._emoji_objects.values())
+
     def __init__(self, db):
         super().__init__(bot=None, db=db)
         self.enabled = True
@@ -80,6 +83,10 @@ class Store(TeamIconStore):
         class Bot:
             create_application_emoji = staticmethod(
                 lambda name, image: self._create_raw(name, image))
+            # _adopt_existing re-lists through the bot too, so the stub has
+            # to offer it or the adoption path can't be exercised at all.
+            fetch_application_emojis = staticmethod(
+                lambda: self.fetch_application_emojis())
 
         self.bot = Bot()
         self.created.append((name, image_url))
@@ -286,6 +293,61 @@ async def main():
           capped.icon(team(808, "Latecomer")))
     check("without the failure being blamed on the logo",
           capped._attempts.get(808, 0) == 0, str(capped._attempts.get(808)))
+
+    print("\n[an emoji we own but lost track of is adopted, not refused]")
+    # The shape: the startup list came back without this emoji (or the row was
+    # cleared while the emoji survived), so _by_name has no entry, create
+    # fails with "name taken" — and the team was written off as a bad logo
+    # even though its badge is sitting on the application.
+    class Lost(Store):
+        def __init__(self, db, hidden):
+            super().__init__(db)
+            self.hidden = hidden
+            self.relists = 0
+
+        async def _create_raw(self, name, image):
+            if name == self.hidden.name:
+                exc = discord.HTTPException.__new__(discord.HTTPException)
+                exc.status, exc.code = 400, 50035
+                exc.text = "Emoji name already exists"
+                raise exc
+            return await self._create_emoji(name, image)
+
+        async def fetch_application_emojis(self):
+            self.relists += 1
+            return [self.hidden]
+
+    from src.services.emojis import emoji_name_for
+    name909 = emoji_name_for(909, "Lost Team")
+    hidden = Emoji(77001, name909)
+    lost = Lost(db, hidden)
+    check("we start out blind to it", name909 not in lost._by_name)
+    lost.icon(team(909, "Lost Team"))
+    await drain(lost)
+    check("Discord was asked again", lost.relists == 1, str(lost.relists))
+    got = lost.icon(team(909, "Lost Team"))
+    check("and the existing badge is adopted",
+          got == f"<:{name909}:77001>", got)
+    check("the team is not blamed for it",
+          lost._attempts.get(909, 0) == 0, str(lost._attempts.get(909)))
+    row = await db.get_team_emoji(909)
+    check("and it is written down, so a restart keeps it",
+          row and int(row["emoji_id"]) == 77001,
+          str(row["emoji_id"] if row else None))
+
+    print("\n[a name taken by nothing we can find still counts as a failure]")
+    class Phantom(Lost):
+        async def fetch_application_emojis(self):
+            self.relists += 1
+            return []
+
+    phantom = Phantom(db, Emoji(1, emoji_name_for(910, "Phantom")))
+    phantom.icon(team(910, "Phantom"))
+    await drain(phantom)
+    check("it is recorded as a failure rather than retried forever",
+          phantom._attempts.get(910, 0) >= 1, str(phantom._attempts.get(910)))
+    check("and the team renders without an icon",
+          phantom.icon(team(910, "Phantom")) == "")
 
     print("\n[eviction drops the least recently *used*, not the oldest minted]")
     lru = Store(db)
