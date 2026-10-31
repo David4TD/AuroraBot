@@ -18,6 +18,7 @@ through — a suite that crashes on its third check is not a suite that passed.
 | suite | what it pins down |
 | --- | --- |
 | `test_board.py` | The event board: one pinned message per event, edited in place. Built on the real Worlds Swiss slate, including the undrawn rounds and what a shared message may not claim about its reader. |
+| `test_opponents.py` | What `opponents()` carries off a match payload — the logo above all, since every card mints its crests from it. |
 | `test_icons.py` | Team logo emojis: minting once, noticing a rebrand, and retrying a failure instead of abandoning the team for the run. |
 | `test_tidy.py` | Clearing a match's reminder and live cards once its result is posted — and never touching anything else in the channel. |
 | `test_feed_depth.py` | Reading a tier-mixed feed deep enough to see Tier 1. Shaped on the measured Counter-Strike feed, where the first Tier 1 match sat at index 24 of 100. |

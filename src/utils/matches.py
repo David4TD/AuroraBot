@@ -20,17 +20,34 @@ def game_key_of(match: dict, cs_override: str | None = None) -> str | None:
 
 
 def opponents(match: dict) -> list[dict]:
-    """Return ``[{"id": ..., "name": ...}, ...]`` for the confirmed teams.
+    """The confirmed teams in a match, with everything needed to draw them.
 
     Matches with an unconfirmed side (a bracket slot that hasn't been filled)
     yield fewer than two entries — callers should check the length before
     treating it as a head-to-head.
+
+    ``image_url`` matters as much as the name: it is what the icon store mints
+    a team's badge from, and this returned only id and name for a long time.
+    Every card draws its crests from here, so a team that was only ever seen
+    through a match — rather than through a roster picker, which passes the
+    whole team object — could never have an icon minted for it at all. That
+    looked like a handful of teams Discord simply refused.
+
+    ``location`` comes along for the same reason: it is what the flag
+    fallback reads when a team has no badge yet.
     """
     out: list[dict] = []
     for entry in match.get("opponents") or []:
         team = entry.get("opponent") or {}
-        if team.get("id"):
-            out.append({"id": int(team["id"]), "name": team.get("name", "Team")})
+        if not team.get("id"):
+            continue
+        out.append({
+            "id": int(team["id"]),
+            "name": team.get("name", "Team"),
+            "image_url": team.get("image_url"),
+            "acronym": team.get("acronym"),
+            "location": team.get("location"),
+        })
     return out
 
 
