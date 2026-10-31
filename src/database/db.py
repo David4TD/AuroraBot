@@ -1622,13 +1622,18 @@ class Database:
         Scoped to the guild on purpose: predictions are stored per user, not
         per server, so an unscoped list would print names from every other
         server the bot is in into this channel.
+
+        ``status``, ``points_awarded``, ``odds`` and ``weight`` ride along so a
+        card rendered after the match settles can say what each pick actually
+        paid, rather than only who was right. They are the settled values, so
+        on an open match they read as 'open' and zero.
         """
         if guild_id is None:
             return []
         cur = await self.conn.execute(
             """
             SELECT p.discord_id, p.predicted_team_id, p.predicted_team_name,
-                   p.doubled,
+                   p.doubled, p.status, p.points_awarded, p.odds, p.weight,
                    COALESCE(u.display_name, 'Someone') AS display_name
             FROM predictions p
             LEFT JOIN users u ON u.discord_id = p.discord_id

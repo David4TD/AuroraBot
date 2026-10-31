@@ -250,8 +250,13 @@ class Payout:
         """The fraction of the room that was on this side."""
         return self.backers / self.voters if self.voters else 1.0
 
-    def explain(self) -> str:
-        """One line a human can check the maths against."""
+    def formula(self) -> str:
+        """The working, without the total — ``10 base · ×1.67 (3/5 called it)``.
+
+        Split out from :meth:`explain` because a result card prices one match
+        for the whole room: the working is shared and printed once, while the
+        totals differ per person depending on who spent a token.
+        """
         bits = [f"{BASE_POINTS} base"]
         if self.multiplier > 1.0:
             bits.append(f"×{self.multiplier:.2f} ({self.backers}/{self.voters} called it)")
@@ -259,7 +264,11 @@ class Payout:
             bits.append(f"×{self.weight:g} stage")
         if self.doubled:
             bits.append(f"×{DOUBLE_DOWN} doubled down")
-        return f"**+{self.points}** pts — {' · '.join(bits)}"
+        return " · ".join(bits)
+
+    def explain(self) -> str:
+        """One line a human can check the maths against."""
+        return f"**+{self.points}** pts — {self.formula()}"
 
 
 def payout_for(backers: int, voters: int, *, doubled: bool = False,

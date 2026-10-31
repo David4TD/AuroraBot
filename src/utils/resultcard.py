@@ -22,7 +22,7 @@ import discord
 from .embeds import BRAND
 from .matches import opponents
 from .regions import event_flag
-from .scoring import stage_label
+from .scoring import DOUBLE_DOWN, payout_for, stage_label, stage_weight
 from .tournaments import parse_dt
 
 log = logging.getLogger("aurorabot.resultcard")
@@ -156,8 +156,32 @@ async def build_result_card(bot, match: dict, game_key: str, guild_id=None
     return embed
 
 
+def _listed(names: list[str]) -> str:
+    shown = ", ".join(names[:MAX_NAMES])
+    if len(names) > MAX_NAMES:
+        shown += f" _+{len(names) - MAX_NAMES}_"
+    return shown
+
+
+def _signed(points: int) -> str:
+    """``+25`` / ``−10`` / ``0``, with a real minus sign rather than a hyphen."""
+    if points < 0:
+        return f"−{abs(points)}"
+    return f"+{points}" if points else "0"
+
+
 async def _add_predictions(bot, embed, match, teams, guild_id) -> None:
-    """How this server called it. Silent when nobody predicted."""
+    """How this server called it, and what each call was worth.
+
+    The caller settles before rendering, so every pick here carries its final
+    points — which is the only reason the price can be printed at all.
+
+    Naming the price matters as much as naming the winners. The multiplier is
+    what actually separates a board: someone can lead on eighteen correct calls
+    while second place has twenty-one, purely because the leader kept being on
+    the unpopular side of a split. Nothing in the bot ever showed that per
+    match, so the standings underneath looked arbitrary.
+    """
     try:
         picks = await bot.db.match_predictions(int(match["id"]), int(guild_id))
     except Exception:  # noqa: BLE001 - the result matters more than the extra
@@ -169,28 +193,89 @@ async def _add_predictions(bot, embed, match, teams, guild_id) -> None:
     winner_id = match.get("winner_id")
     if winner_id is None:
         return
+    winner_id = int(winner_id)
+
+    settled = [p for p in picks if (p["status"] or "").lower() in ("won", "lost")]
+    if len(settled) != len(picks):
+        # Something didn't pay out — a settle that failed, or picks older than
+        # the points column. Printing a price for those would be inventing one,
+        # so fall back to the roll call this card showed before.
+        _add_roll_call(embed, picks, winner_id)
+        await _add_leaderboard(bot, embed, match, guild_id)
+        return
+
+    voters = len(picks)
+    backers = sum(1 for p in picks if int(p["predicted_team_id"]) == winner_id)
+    # The weight each pick was *settled* at, not what the match looks like now:
+    # a stage renamed after the fact must not change what the card says people
+    # were paid. Only falls back to reading the match if nothing stamped one.
+    weight = next(
+        (float(p["weight"]) for p in picks if p["weight"]), None
+    ) or stage_weight(match)
+    base = payout_for(backers, voters, weight=weight)
+
+    won_plain: list[str] = []
+    won_doubled: list[str] = []
+    lost_plain: list[str] = []
+    lost_doubled: list[str] = []
+
+    for pick in picks:
+        name = str(pick["display_name"])
+        points = int(pick["points_awarded"] or 0)
+        doubled = bool(pick["doubled"])
+        if (pick["status"] or "").lower() == "won":
+            # Anything over the going rate is the perfect-day bonus, which is
+            # awarded onto one pick of a clean sweep and would otherwise make
+            # that person's total look like a mistake.
+            extra = points - base.points * (DOUBLE_DOWN if doubled else 1)
+            if extra > 0:
+                name += f" ☀️+{extra}"
+            (won_doubled if doubled else won_plain).append(name)
+        elif doubled:
+            # The penalty is capped at what that member had banked, so two
+            # people can lose different amounts on the same match — the number
+            # goes next to the name rather than on the group.
+            lost_doubled.append(f"{name} **{_signed(points)}**")
+        else:
+            lost_plain.append(name)
+
+    lines = [base.formula()]
+    if won_plain:
+        lines.append(f"✅ **+{base.points}** — {_listed(won_plain)}")
+    if won_doubled:
+        lines.append(
+            f"💥 **+{base.points * DOUBLE_DOWN}** doubled down — "
+            f"{_listed(won_doubled)}"
+        )
+    if lost_plain:
+        lines.append(f"❌ {_listed(lost_plain)}")
+    if lost_doubled:
+        lines.append(f"💥 doubled down, missed — {_listed(lost_doubled)}")
+
+    embed.add_field(
+        name=f"🔮 Called it: {backers}/{voters}",
+        value="\n".join(lines)[:1024],
+        inline=False,
+    )
+    await _add_leaderboard(bot, embed, match, guild_id)
+
+
+def _add_roll_call(embed, picks, winner_id: int) -> None:
+    """Who was right, with no prices — for picks that never settled."""
     right = [p["display_name"] for p in picks
-             if int(p["predicted_team_id"]) == int(winner_id)]
+             if int(p["predicted_team_id"]) == winner_id]
     wrong = [p["display_name"] for p in picks
-             if int(p["predicted_team_id"]) != int(winner_id)]
-
-    def listed(names: list[str]) -> str:
-        shown = ", ".join(names[:MAX_NAMES])
-        if len(names) > MAX_NAMES:
-            shown += f" _+{len(names) - MAX_NAMES}_"
-        return shown
-
+             if int(p["predicted_team_id"]) != winner_id]
     parts = []
     if right:
-        parts.append(f"✅ {listed(right)}")
+        parts.append(f"✅ {_listed(right)}")
     if wrong:
-        parts.append(f"❌ {listed(wrong)}")
+        parts.append(f"❌ {_listed(wrong)}")
     embed.add_field(
         name=f"🔮 Called it: {len(right)}/{len(picks)}",
         value="\n".join(parts)[:1024],
         inline=False,
     )
-    await _add_leaderboard(bot, embed, match, guild_id)
 
 
 async def _add_leaderboard(bot, embed, match, guild_id) -> None:
