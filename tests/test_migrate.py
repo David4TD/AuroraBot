@@ -107,6 +107,17 @@ async def main():
     check("the board is still there",
           await db.board_for(500, 1) is not None)
     check("with its matches", len(await db.board_match_rows(board_id)) == 1)
+
+    print("\n[event_boards learns when it last moved]")
+    cur = await db.conn.execute("PRAGMA table_info(event_boards)")
+    cols = {r["name"] for r in await cur.fetchall()}
+    check("the column is there", "last_moved_at" in cols, str(sorted(cols)))
+    board = await db.board_for(500, 1)
+    check("a board that predates it reads as never moved",
+          board["last_moved_at"] is None, str(board["last_moved_at"]))
+    await db.set_board_moved(board_id)
+    board = await db.board_for(500, 1)
+    check("and stamping it sticks", board["last_moved_at"] is not None)
     print("\n[and deleting it takes its matches]")
     await db.delete_board(board_id)
     check("board gone", await db.board_for(500, 1) is None)

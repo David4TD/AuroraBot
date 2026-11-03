@@ -13,6 +13,10 @@ the event has fixtures. Three things follow from it being *one* message:
 * **Editing has to be cheap.** The sweep compares a digest of what it would
   render against what it last rendered and does nothing when they match, so a
   quiet five minutes costs no API call.
+* **Moving is not editing.** Keeping the board last means deleting it and
+  posting it again, which notifies the channel. That is rate limited to
+  :data:`MOVE_AFTER` — except when a draw lands, because a match that just
+  became predictable is the one thing worth interrupting for.
 * **It can't carry every match as a button.** Discord allows five rows of five,
   so the four matches nearest kick-off get a row each — one tap, as before —
   and everything else is reachable through a picker.
@@ -50,9 +54,39 @@ SWEEP_MINUTES = 5
 # How far ahead a board looks. Long enough to cover an event's week, short
 # enough that it isn't advertising fixtures nobody can plan around yet.
 HORIZON = timedelta(days=7)
+# How long the board stays where it is before it may move to the bottom again.
+#
+# Editing is silent; moving is not — it deletes the message and posts a new
+# one, so everyone who follows the channel gets another notification and the
+# scrollback fills with the same card. On the sweep interval that was up to
+# twelve times an hour in a channel the bot itself keeps talking in, which
+# turns the board into the noise it was meant to replace. Five hours is a few
+# moves a day: often enough that it is rarely far from the bottom, rare enough
+# that nobody notices it moving.
+MOVE_AFTER = timedelta(hours=5)
 # Matches offered in the picker. Discord's select caps at 25 options.
 MAX_PICKER = 25
 UTC = timezone.utc
+
+
+def _move_due(board, now: datetime | None = None) -> bool:
+    """Has the board sat still long enough to be allowed to move again?
+
+    A board with no stamp is due. The column was added after the boards were,
+    so NULL means "we don't know" rather than "it just moved, leave it" — and
+    the honest reading of that is to let one sweep move it and start the clock
+    from there, instead of pinning an old board in place for five hours.
+    """
+    if board is None:
+        return True
+    try:
+        stamp = board["last_moved_at"]
+    except (KeyError, IndexError):
+        stamp = None
+    last = parse_dt(stamp)
+    if last is None:
+        return True
+    return (now or datetime.now(UTC)) - last >= MOVE_AFTER
 
 
 def _boardable(sub) -> bool:
@@ -386,7 +420,7 @@ class Board(commands.Cog):
             return
         done = 0
         for sub in subs:
-            if await self._refresh(sub):
+            if await self._refresh(sub, force=True):
                 done += 1
         await interaction.followup.send(
             f"Board up to date for {done} subscription(s)." if done
@@ -429,8 +463,13 @@ class Board(commands.Cog):
             out[int(match["id"])] = match
         return list(out.values())
 
-    async def _refresh(self, sub) -> bool:
-        """Post, edit or retire one board. True if it now exists and is current."""
+    async def _refresh(self, sub, *, force: bool = False) -> bool:
+        """Post, edit or retire one board. True if it now exists and is current.
+
+        *force* bypasses the move rate limit. ``/board`` is how someone says
+        "bring it up", and answering that with a card still buried forty
+        messages back would make the command look broken.
+        """
         channel_id = int(sub["channel_id"])
         guild_id = int(sub["guild_id"]) if sub["guild_id"] else None
         board = await self.bot.db.board_for(channel_id, int(sub["id"]))
@@ -479,15 +518,36 @@ class Board(commands.Cog):
             )
             if board_id is None:
                 return False        # another sweep claimed it
+            offered_before: set[int] = set()
         else:
             board_id = int(board["id"])
+            # Read before _store overwrites it: what the board was offering
+            # last time is the only record of which matches were still TBD.
+            offered_before = {
+                int(row["match_id"])
+                for row in await self.bot.db.board_match_rows(board_id)
+            }
             if board["signature"] == sig and board["message_id"]:
                 # Nothing to say — but if the board has been buried since, it
-                # still has to move, so only a board that is both current and
-                # last costs no API call.
+                # may still have to move, so only a board that is both current
+                # and last costs no API call.
                 channel = self.bot.get_channel(channel_id)
                 if channel is None or not await self._is_buried(channel, board):
                     return True
+                if not force and not _move_due(board):
+                    # Buried, but the card is unchanged and it moved recently.
+                    # Reposting here would notify the channel to tell it
+                    # exactly what it was told last time — unless the card is
+                    # no longer there, in which case sitting out the window
+                    # would leave the channel with no board at all.
+                    if await self._still_there(channel, board):
+                        return True
+
+        # A match that wasn't on the board and now is has just become
+        # predictable — a bracket slot filled, or a fixture scheduled inside
+        # the horizon. That is the one thing worth interrupting for, so it
+        # overrides the rate limit rather than waiting for the next window.
+        new_draws = {int(m["id"]) for m in live} - offered_before
 
         await self._store(board_id, live)
 
@@ -499,13 +559,18 @@ class Board(commands.Cog):
         # A board people scroll back to find is a board people stop using, and
         # the things that bury it are mostly the bot's own alerts. So when
         # something has been said since, it comes back at the bottom rather
-        # than being edited where it sits. The sweep interval is the rate
-        # limit: at worst this moves once every few minutes.
+        # than being edited where it sits — but moving means deleting and
+        # reposting, which notifies everyone, so it waits for a draw or for
+        # the window.
         buried = await self._is_buried(channel, board)
-        if buried and board is not None and board["signature"] == sig:
-            # Unchanged, but no longer last. Reposting is the whole point.
-            log.debug("board %s is buried; reposting", board_id)
+        move = buried and (force or bool(new_draws) or _move_due(board))
+        if move:
+            log.debug(
+                "board %s is buried; reposting (%s)", board_id,
+                f"{len(new_draws)} newly drawn" if new_draws else "due a move",
+            )
 
+        moved = False
         for index, part in enumerate(parts):
             bank = banks[index] if index < len(banks) else []
             # The last part carries the controls, and the overflow picker only
@@ -515,9 +580,12 @@ class Board(commands.Cog):
                 controls=(index == len(parts) - 1),
                 overflow=len(live) > MAX_TAPPABLE and index == len(parts) - 1,
             ) if votes else None
-            if not await self._place(channel, board, board_id, index + 1,
-                                     part, part_view, repost=buried):
+            placed = await self._place(channel, board, board_id, index + 1,
+                                       part, part_view, repost=move)
+            if not placed:
                 return False
+            if index == 0 and placed == "posted":
+                moved = True
 
         if len(parts) == 1 and board is not None and board["message_id_2"]:
             # The week shrank back to one card. Retire the spare rather than
@@ -525,15 +593,24 @@ class Board(commands.Cog):
             await self._retire(channel, int(board["message_id_2"]))
             await self.bot.db.set_board_message(board_id, None, part=2)
 
+        if moved:
+            # Stamped on what actually happened rather than on what was
+            # intended, so a first post, and a repost after someone deleted
+            # the card by hand, both start the clock.
+            await self.bot.db.set_board_moved(board_id)
         await self.bot.db.set_board_signature(board_id, sig)
         return True
 
     async def _place(self, channel, board, board_id: int, part: int,
-                     embed, view, *, repost: bool = False) -> bool:
+                     embed, view, *, repost: bool = False) -> str | bool:
         """Edit this part's message if it still exists, else post a new one.
 
         With *repost*, the old message is removed first so the board comes back
         at the bottom of the channel instead of staying where it was.
+
+        Returns ``"edited"`` or ``"posted"`` — which of the two it was decides
+        whether the board moved, and the move rate limit is stamped on what
+        happened rather than on what was asked for. ``False`` on failure.
         """
         column = "message_id" if part == 1 else "message_id_2"
         existing = int(board[column]) if board is not None and board[column] else None
@@ -545,7 +622,7 @@ class Board(commands.Cog):
 
         if existing is not None:
             if await self._edit(channel, existing, embed, view) is not None:
-                return True
+                return "edited"
             # Deleted by someone, or too old to edit: start a new one.
             await self.bot.db.set_board_message(board_id, None, part=part)
 
@@ -555,7 +632,7 @@ class Board(commands.Cog):
         await self.bot.db.set_board_message(board_id, message.id, part=part)
         if part == 1:
             await self._pin(message)
-        return True
+        return "posted"
 
     async def _is_buried(self, channel, board) -> bool:
         """Has anything been said in this channel since the board went out?
@@ -573,6 +650,27 @@ class Board(commands.Cog):
         except (discord.Forbidden, discord.HTTPException) as exc:
             log.debug("board: cannot read history in %s: %s", channel.id, exc)
         return False
+
+    async def _still_there(self, channel, board) -> bool:
+        """Is the board's own message actually still in the channel?
+
+        Only asked when a move is about to be declined, so it costs nothing on
+        the common path. Holding the board where it is for five hours is only
+        the right answer while there is still a board to hold — a card deleted
+        by hand would otherwise leave the channel with nothing until the
+        window passed.
+
+        A channel we cannot read is reported as intact: reposting on a guess
+        is the failure mode the rate limit exists to prevent.
+        """
+        try:
+            await channel.fetch_message(int(board["message_id"]))
+        except discord.NotFound:
+            return False
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            log.debug("board: cannot check message %s: %s",
+                      board["message_id"], exc)
+        return True
 
     async def _retire(self, channel, message_id: int) -> None:
         try:

@@ -221,6 +221,10 @@ CREATE TABLE IF NOT EXISTS event_boards (
     -- buttons stay on the first, which is the one holding the nearest games.
     message_id_2    TEXT,
     signature       TEXT,
+    -- When the board was last moved to the bottom of the channel, as opposed
+    -- to edited where it sits. Moving means deleting and reposting, which
+    -- costs everyone a notification, so it is rate limited against this.
+    last_moved_at   TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (channel_id, subscription_id)

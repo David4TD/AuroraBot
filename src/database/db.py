@@ -207,6 +207,17 @@ class Database:
             )
             await self._conn.commit()
 
+        # Step 13: when a board was last moved to the bottom of its channel.
+        # Existing boards have none, which NULL says correctly — it reads as
+        # "overdue", so the first sweep after the upgrade may move it once and
+        # the clock starts from there.
+        if board_columns and "last_moved_at" not in board_columns:
+            log.info("Adding the move stamp to event_boards…")
+            await self._conn.execute(
+                "ALTER TABLE event_boards ADD COLUMN last_moved_at TEXT"
+            )
+            await self._conn.commit()
+
         alert_message_columns = await self._table_columns("alert_messages")
         if alert_message_columns and "tournament_id" not in alert_message_columns:
             log.info("Adding tournament columns to alert_messages…")
@@ -825,6 +836,18 @@ class Database:
             "UPDATE event_boards SET signature = ?, updated_at = datetime('now') "
             "WHERE id = ?",
             (signature, board_id),
+        )
+        await self.conn.commit()
+
+    async def set_board_moved(self, board_id: int) -> None:
+        """Start the clock on how long before the board may move again.
+
+        Stamped only when the board is actually deleted and reposted, never
+        when it is edited in place: editing is silent, moving is not.
+        """
+        await self.conn.execute(
+            "UPDATE event_boards SET last_moved_at = datetime('now') WHERE id = ?",
+            (board_id,),
         )
         await self.conn.commit()
 

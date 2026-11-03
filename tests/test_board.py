@@ -229,6 +229,20 @@ async def build(feed, scope="league"):
     return db, bot, ch, cog, sub, sub_id
 
 
+async def age_board(db, sub, hours: int):
+    """Backdate the move stamp, so the board is allowed to move again.
+
+    Written as SQL rather than by waiting: the window is five hours and the
+    thing under test is the decision, not the clock.
+    """
+    await db.conn.execute(
+        "UPDATE event_boards SET last_moved_at = datetime('now', ?) "
+        "WHERE subscription_id = ?",
+        (f"-{hours} hours", int(sub["id"])),
+    )
+    await db.conn.commit()
+
+
 def labels(view):
     return [getattr(c, "item", c).label for c in view.children] if view else []
 
@@ -454,6 +468,13 @@ async def main():
 
     await ch.say("a match reminder lands")
     await cog._refresh(sub)
+    check("being buried is not on its own enough to move it",
+          sorted(ch.messages)[:2] == original, str(sorted(ch.messages)))
+    # Moving notifies the channel, so it is rate limited; the rest of this
+    # section is about where it lands once a move is actually allowed. The
+    # window itself is tested in test_board_move.py.
+    await age_board(db, sub, hours=6)
+    await cog._refresh(sub)
     check("once something is said after it, it comes back",
           sorted(ch.messages)[-2:] != original[-1:],
           str(sorted(ch.messages)))
@@ -477,6 +498,22 @@ async def main():
     await cog._refresh(sub)
     check("and it settles again once it is last", sorted(ch.messages) == moved,
           str(sorted(ch.messages)))
+    await db.close()
+
+    print("\n[/board brings it up without waiting for the window]")
+    db, bot, ch, cog, sub, _ = await build(slate())
+    await cog._refresh(sub)
+    await ch.say("someone talks")
+    await cog._refresh(sub)
+    check("the sweep leaves it where it is",
+          max(ch.messages) not in (
+              int((await db.board_for(CHANNEL, int(sub["id"])))["message_id_2"]),
+          ), str(sorted(ch.messages)))
+    await cog._refresh(sub, force=True)
+    board = await db.board_for(CHANNEL, int(sub["id"]))
+    check("asking for it explicitly moves it anyway",
+          max(ch.messages) == int(board["message_id_2"]),
+          f"{max(ch.messages)} vs {board['message_id_2']}")
     await db.close()
 
     print("\n[a channel whose history can't be read is left alone]")
