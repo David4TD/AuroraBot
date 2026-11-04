@@ -519,7 +519,8 @@ class Board(commands.Cog):
             if board_id is None:
                 return False        # another sweep claimed it
             offered_before: set[int] = set()
-        else:
+        buried: bool | None = None
+        if board is not None:
             board_id = int(board["id"])
             # Read before _store overwrites it: what the board was offering
             # last time is the only record of which matches were still TBD.
@@ -532,7 +533,10 @@ class Board(commands.Cog):
                 # may still have to move, so only a board that is both current
                 # and last costs no API call.
                 channel = self.bot.get_channel(channel_id)
-                if channel is None or not await self._is_buried(channel, board):
+                if channel is None:
+                    return True
+                buried = await self._is_buried(channel, board)
+                if not buried:
                     return True
                 if not force and not _move_due(board):
                     # Buried, but the card is unchanged and it moved recently.
@@ -548,7 +552,18 @@ class Board(commands.Cog):
         # the horizon. That is the one thing worth interrupting for, so it
         # overrides the rate limit rather than waiting for the next window.
         new_draws = {int(m["id"]) for m in live} - offered_before
+        # _store below overwrites the record a draw is detected from, so a
+        # sweep that fails after it would lose the draw and leave the board
+        # waiting out the window. Held here until a sweep succeeds.
+        owed = self.__dict__.setdefault("_owed_draws", {})
+        new_draws |= owed.pop(board_id, set())
+        owed[board_id] = new_draws
 
+        # Kick-off times move, and a pick's stored one is what locks its
+        # double down; the board has the current ones to hand.
+        await self.bot.db.refresh_match_starts(
+            [(int(m["id"]), m.get("begin_at")) for m in matches]
+        )
         await self._store(board_id, live)
 
         channel = self.bot.get_channel(channel_id)
@@ -562,7 +577,8 @@ class Board(commands.Cog):
         # than being edited where it sits — but moving means deleting and
         # reposting, which notifies everyone, so it waits for a draw or for
         # the window.
-        buried = await self._is_buried(channel, board)
+        if buried is None:
+            buried = await self._is_buried(channel, board)
         move = buried and (force or bool(new_draws) or _move_due(board))
         if move:
             log.debug(
@@ -580,8 +596,10 @@ class Board(commands.Cog):
                 controls=(index == len(parts) - 1),
                 overflow=len(live) > MAX_TAPPABLE and index == len(parts) - 1,
             ) if votes else None
+            # Once part 1 is new, every later part has to follow it down, or
+            # a card deleted by hand comes back below the rest of the day.
             placed = await self._place(channel, board, board_id, index + 1,
-                                       part, part_view, repost=move)
+                                       part, part_view, repost=move or moved)
             if not placed:
                 return False
             if index == 0 and placed == "posted":
@@ -599,6 +617,7 @@ class Board(commands.Cog):
             # the card by hand, both start the clock.
             await self.bot.db.set_board_moved(board_id)
         await self.bot.db.set_board_signature(board_id, sig)
+        owed.pop(board_id, None)
         return True
 
     async def _place(self, channel, board, board_id: int, part: int,

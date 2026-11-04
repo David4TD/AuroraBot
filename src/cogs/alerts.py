@@ -656,6 +656,15 @@ class Alerts(commands.Cog):
             except PandaScoreError as exc:
                 log.warning("poll: could not fetch %s: %s", game_key, exc)
                 running, upcoming = [], []
+            try:
+                # A running match's begin_at is when it really started, which
+                # is what has to lock its double downs if it went early.
+                await self.bot.db.refresh_match_starts(
+                    [(int(m["id"]), m.get("begin_at"))
+                     for m in running + upcoming]
+                )
+            except Exception:  # noqa: BLE001 - never take the poll down with us
+                log.exception("could not refresh kick-off times")
             # Only matches inside the reminder window are worth announcing.
             due = []
             for match in upcoming:

@@ -1551,21 +1551,29 @@ class Database:
     async def resolve_prediction(
         self, prediction_id: int, status: str, points_delta: int, discord_id: str,
         odds: float = 1.0,
-    ) -> None:
+    ) -> bool:
         """Settle one pick. *points_delta* may be negative for a doubled miss.
 
         A pick that lost can cost points but can never earn them, whatever the
         caller passes — that invariant belongs here rather than in the two
         places that settle, so no future caller can quietly break a board.
+
+        Only a pick that is still open is settled, and the return says whether
+        this call was the one that did it. The result alert and the resolve
+        loop can settle the same match at the same moment; without the guard
+        both paid out, and the lifetime totals counted the pick twice.
         """
         points_delta = (
             int(points_delta) if status == "won" else min(0, int(points_delta))
         )
-        await self.conn.execute(
+        cur = await self.conn.execute(
             "UPDATE predictions SET status = ?, points_awarded = ?, odds = ?, "
-            "resolved_at = datetime('now') WHERE id = ?",
+            "resolved_at = datetime('now') WHERE id = ? AND status = 'open'",
             (status, points_delta, float(odds), prediction_id),
         )
+        if not cur.rowcount:
+            await self.conn.commit()
+            return False
         if points_delta:
             # users.points stays as the lifetime total across every server,
             # which is what /profile shows in a DM. Per-server totals come from
@@ -1582,6 +1590,7 @@ class Database:
                 (discord_id,),
             )
         await self.conn.commit()
+        return True
 
     async def list_user_predictions(
         self, discord_id: int, limit: int = 10
@@ -1733,6 +1742,31 @@ class Database:
         )
         row = await cur.fetchone()
         return int(row["total"] or 0)
+
+    async def refresh_match_starts(
+        self, starts: list[tuple[int, str | None]]
+    ) -> int:
+        """Bring open picks' kick-off times in line with the feed.
+
+        ``match_starts_at`` is written when the pick is made, but it is what
+        locks a double down and decides which day a pick counts towards. A
+        match PandaScore moves after people have picked would otherwise lock
+        at the old time: early if it was delayed, and not at all until the
+        old time if it was brought forward.
+        """
+        changed = 0
+        for match_id, begin_at in starts:
+            if not begin_at:
+                continue
+            cur = await self.conn.execute(
+                "UPDATE predictions SET match_starts_at = ? "
+                "WHERE match_id = ? AND status = 'open' "
+                "AND (match_starts_at IS NULL OR match_starts_at != ?)",
+                (str(begin_at), int(match_id), str(begin_at)),
+            )
+            changed += cur.rowcount or 0
+        await self.conn.commit()
+        return changed
 
     async def set_doubled(self, prediction_id: int, doubled: bool) -> bool:
         """Spend or reclaim a token. Only while the pick is still open.
@@ -2138,21 +2172,42 @@ class Database:
         return list(await cur.fetchall())
 
     async def day_predictions(
-        self, discord_id: int, guild_id: int | None, day: str
+        self, discord_id: int, guild_id: int | None, utc_days: list[str]
     ) -> list[aiosqlite.Row]:
-        """A member's picks for matches starting on *day* (YYYY-MM-DD, UTC).
+        """A member's picks for matches starting on any of *utc_days*.
 
         Used for the perfect-day bonus. ``match_starts_at`` is the match's own
         kick-off, so the day is the match day rather than when they clicked.
+        The server's day is local, so it can span two UTC dates: the caller
+        asks for both and keeps the picks that fall inside its own day.
         """
-        if guild_id is None:
+        if guild_id is None or not utc_days:
             return []
+        marks = ", ".join("?" for _ in utc_days)
         cur = await self.conn.execute(
-            "SELECT id, status FROM predictions "
-            "WHERE discord_id = ? AND guild_id = ? AND substr(match_starts_at, 1, 10) = ?",
-            (str(discord_id), str(guild_id), day),
+            "SELECT id, status, match_starts_at FROM predictions "
+            "WHERE discord_id = ? AND guild_id = ? "
+            f"AND substr(match_starts_at, 1, 10) IN ({marks})",  # noqa: S608
+            (str(discord_id), str(guild_id), *utc_days),
         )
         return list(await cur.fetchall())
+
+    async def claim_perfect_day(
+        self, guild_id: int, discord_id: int, day: str, prediction_id: int
+    ) -> bool:
+        """Record that this member's *day* has been paid. False if it was.
+
+        The insert is the lock. The check that a day is clean runs on every
+        win, so a pick added to a day that was already paid used to pay it
+        again when it landed.
+        """
+        cur = await self.conn.execute(
+            "INSERT OR IGNORE INTO perfect_days "
+            "(guild_id, discord_id, day, prediction_id) VALUES (?, ?, ?, ?)",
+            (str(guild_id), str(discord_id), day, int(prediction_id)),
+        )
+        await self.conn.commit()
+        return bool(cur.rowcount)
 
     async def award_bonus(self, discord_id: int, prediction_id: int, points: int) -> None:
         """Add bonus points onto an already-settled prediction."""

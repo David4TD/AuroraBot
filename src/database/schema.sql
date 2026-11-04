@@ -286,6 +286,18 @@ CREATE TABLE IF NOT EXISTS predictions (
     UNIQUE (discord_id, match_id)
 );
 
+-- Which member's matchdays have already paid the perfect-day bonus. The
+-- check runs on every win, so without a record a pick added to a day that was
+-- already paid paid it again. ``day`` is the server's local date.
+CREATE TABLE IF NOT EXISTS perfect_days (
+    guild_id      TEXT NOT NULL,
+    discord_id    TEXT NOT NULL,
+    day           TEXT NOT NULL,
+    prediction_id INTEGER,
+    awarded_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (guild_id, discord_id, day)
+);
+
 -- Tier-1 tournament lists, one row per game, kept so a restart doesn't start
 -- cold. Autocomplete has ~3 seconds total and a League of Legends fetch alone
 -- takes about three, so the first keystroke after a Force Update used to fail

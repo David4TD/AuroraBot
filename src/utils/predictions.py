@@ -55,6 +55,18 @@ async def submit_prediction(
     ephemeral panel that follows — see ``utils.conviction``.
     """
     existing = await db.get_prediction(user_id, match_id)
+    if (
+        existing is not None and guild_id is not None
+        and existing["guild_id"] is not None
+        and str(existing["guild_id"]) != str(guild_id)
+    ):
+        # One pick per member per match, and this one belongs to another
+        # server. Changing it from here would quietly move that server's vote.
+        return (
+            Outcome.CLOSED,
+            "You've already predicted this match in another server — a match "
+            "can only be picked once.",
+        )
 
     if not is_open(begin_at):
         if existing is not None:

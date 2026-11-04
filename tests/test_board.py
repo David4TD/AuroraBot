@@ -516,6 +516,45 @@ async def main():
           f"{max(ch.messages)} vs {board['message_id_2']}")
     await db.close()
 
+    print("\n[a hand-deleted first part comes back above the second]")
+    db, bot, ch, cog, sub, _ = await build(slate())
+    await cog._refresh(sub)
+    board = await db.board_for(CHANNEL, int(sub["id"]))
+    check("a two-part board to start with", board["message_id_2"] is not None)
+    await ch.messages[int(board["message_id"])].delete()
+    await ch.say("chatter")
+    await cog._refresh(sub)
+    board = await db.board_for(CHANNEL, int(sub["id"]))
+    one, two = int(board["message_id"]), int(board["message_id_2"])
+    check("both parts exist", one in ch.messages and two in ch.messages,
+          str(sorted(ch.messages)))
+    check("part 1 sits above part 2, not below it", one < two, f"{one} / {two}")
+    check("so the board reads as last, not buried",
+          max(ch.messages) == two, str(sorted(ch.messages)))
+    await db.close()
+
+    print("\n[a draw whose move failed is still owed on the next sweep]")
+    feed = slate()
+    db, bot, ch, cog, sub, _ = await build(feed)
+    await cog._refresh(sub)
+    await ch.say("a result lands")
+    # Round 2's first game is drawn, and on that sweep the channel isn't in
+    # the cache yet — the sweep stops after recording what the board offers,
+    # leaving the old cards where they are.
+    feed[8] = fixture(2000, "Round 2: Gen.G vs T1", feed[8]["begin_at"],
+                      [team(100, "Gen.G"), team(105, "T1")])
+    real_get = bot.get_channel
+    bot.get_channel = lambda cid: None
+    check("the failing sweep reports failure", await cog._refresh(sub) is False)
+    bot.get_channel = real_get
+    before = sorted(ch.messages)
+    await cog._refresh(sub)
+    board = await db.board_for(CHANNEL, int(sub["id"]))
+    check("the next sweep still moves it to the bottom",
+          max(ch.messages) == int(board["message_id_2"] or board["message_id"]),
+          f"{before} -> {sorted(ch.messages)}")
+    await db.close()
+
     print("\n[a channel whose history can't be read is left alone]")
     db, bot, ch, cog, sub, _ = await build(slate())
     await cog._refresh(sub)

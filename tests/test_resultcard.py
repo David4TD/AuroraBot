@@ -64,6 +64,8 @@ class Bot:
     def __init__(self, db):
         self.db = db
         self.icons = Icons()
+        # Perfect days are judged in the server's own timezone.
+        self.settings = type("S", (), {"digest_tz_name": "UTC"})()
 
 
 def finished(mid=900, stage="Group Stage", name="T1 vs Gen.G", when=None):

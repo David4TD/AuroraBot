@@ -32,6 +32,7 @@ from ..utils.settle import settle_match
 from ..utils.conviction import pick_panel
 from ..utils.regions import event_flag
 from ..utils.tiers import filter_for
+from ..utils.tournaments import parse_dt
 
 log = logging.getLogger("aurorabot.cogs.predictions")
 
@@ -278,9 +279,15 @@ class Predictions(commands.Cog):
         open_preds = await self.bot.db.get_open_predictions()
         if not open_preds:
             return
-        # Group by match to minimise API calls.
+        # Group by match to minimise API calls, and skip matches that haven't
+        # kicked off: a week of picks used to cost a request per match every
+        # five minutes for games that could not possibly be finished.
+        now = datetime.now(timezone.utc)
         by_match: dict[int, list] = {}
         for p in open_preds:
+            begin = parse_dt(p["match_starts_at"])
+            if begin is not None and begin > now:
+                continue
             by_match.setdefault(p["match_id"], []).append(p)
 
         for match_id, preds in by_match.items():
